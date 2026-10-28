@@ -198,7 +198,10 @@ def run_main_actions(no_run_immediately=False):
         telemetry.track_task_start("main")
         main_start_time = time.time()
         try:
-            version.start()
+            # The upstream updater distributes Windows files; never install them
+            # into a macOS app. Native updates require a separate signed channel.
+            if sys.platform != "darwin":
+                version.start()
             game.start()
             Daily.start()
             reward.start()

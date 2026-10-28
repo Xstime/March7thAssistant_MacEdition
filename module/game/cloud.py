@@ -425,6 +425,8 @@ class CloudGameController(GameControllerBase):
             try:
                 options.debugger_address = f"127.0.0.1:{reconnect_port}"
                 self.driver = webdriver_type(service=service, options=options)
+                if self.driver.service.process:
+                    self._driver_pid = self.driver.service.process.pid
                 self._configure_pointer_lock(headless)
                 self.log_info("已连接到现有浏览器")
                 return
@@ -469,6 +471,8 @@ class CloudGameController(GameControllerBase):
         try:
             self.log_debug("启动浏览器中...")
             self.driver = webdriver_type(service=service, options=options)
+            if self.driver.service.process:
+                self._driver_pid = self.driver.service.process.pid
             self.log_debug("浏览器启动成功")
         except SessionNotCreatedException as e:
             self.log_error(f"浏览器启动失败: {e}")
@@ -864,7 +868,7 @@ class CloudGameController(GameControllerBase):
 
         for proc in psutil.process_iter(['pid', 'name']):
             name = proc.info.get('name')
-            if not name or name.lower() not in browser_names:
+            if not name or (sys.platform != "darwin" and name.lower() not in browser_names):
                 continue
 
             try:
@@ -1676,7 +1680,19 @@ class CloudGameController(GameControllerBase):
         import win32gui
         return win32gui.FindWindow(None, "云·星穹铁道")
 
+    def is_game_running(self) -> bool:
+        # macOS cloud control uses CDP, not a Windows HWND.
+        if sys.platform == "darwin":
+            try:
+                return self.is_in_game()
+            except (ConnectionError, WebDriverException):
+                return False
+        return super().is_game_running()
+
     def switch_to_game(self) -> bool:
+        if sys.platform == "darwin":
+            # No system-wide focus or synthetic keyboard is required by CDP.
+            return self.is_game_running()
         if self.cfg.browser_headless_enable:
             self.log_warning("游戏切换至前台失败：当前为无窗口模式")
             return False

@@ -49,7 +49,7 @@ jobs:
       - name: Compile Python sources
         run: uv run --python 3.12 python -m compileall -q app.py main.py app module utils tests
       - name: Test native workspace, browser and launcher contracts
-        run: uv run --python 3.12 pytest -q tests/test_utils/test_macos_paths.py tests/test_utils/test_macos_launcher.py
+        run: uv run --python 3.12 pytest -q tests/test_utils/test_macos_paths.py tests/test_utils/test_macos_launcher.py tests/test_utils/test_macos_task_policy.py tests/test_utils/test_macos_preview.py tests/test_utils/test_macos_autostart.py
       - name: Build unsigned development .app
         run: uv run --python 3.12 pyinstaller --noconfirm "March7th MacEdition.spec"
       - name: Confirm native executable architecture
