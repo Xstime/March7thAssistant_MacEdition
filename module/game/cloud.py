@@ -42,7 +42,9 @@ class CloudGameController(GameControllerBase):
     COOKIE_PATH = "settings/cookies.enc"          # Cookies 保存地址（仅用于调试）
     GAME_URL = "https://sr.mihoyo.com/cloud"            # 游戏地址
     BROWSER_TAG = "--march-7th-assistant-sr-cloud-game"  # 自定义浏览器参数作为标识，用于识别哪些浏览器进程属于三月七小助手
-    BROWSER_INSTALL_PATH = os.path.join(os.getcwd(), "3rdparty", "WebBrowser")  # 浏览器安装路径
+    BROWSER_INSTALL_PATH = (str(__import__("utils.macos_paths", fromlist=["browser_install_dir"]).browser_install_dir())
+                            if sys.platform == "darwin"
+                            else os.path.join(os.getcwd(), "3rdparty", "WebBrowser"))  # 浏览器安装路径
     INTEGRATED_BROWSER_VERSION = "140.0.7339.207"      # 浏览器版本
     DISABLE_POINTER_LOCK_SCRIPT = """
         (() => {

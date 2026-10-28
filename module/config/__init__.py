@@ -18,10 +18,18 @@ CONFIG_PATH = "./config.yaml"
 if sys.platform != 'win32':
     os.environ.setdefault("MARCH7TH_CLOUD_GAME_ENABLE", "true")
     
+# Set a safe, user-editable default for a newly created Mac Edition config.
+# Environment overrides would make the GUI settings permanently ineffective.
+_native_macos_first_run = sys.platform == "darwin" and not os.path.isfile(CONFIG_PATH)
 cfg = Config(VERSION_PATH, EXAMPLE_PATH, CONFIG_PATH)
+if _native_macos_first_run:
+    cfg.set_values({
+        "browser_headless_enable": True,
+        "browser_headless_restart_on_not_logged_in": False,
+    })
 
 cfg.env = os.environ.copy()
-cfg.env['PATH'] = os.path.dirname(cfg.python_exe_path) + ';' + cfg.env['PATH']
+cfg.env['PATH'] = os.path.dirname(cfg.python_exe_path) + os.pathsep + cfg.env['PATH']
 cfg.useragent = {"User-Agent": f"March7thAssistant/{cfg.version}"}
 
 if sys.platform == 'win32':
