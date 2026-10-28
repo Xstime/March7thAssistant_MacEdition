@@ -205,7 +205,7 @@ class CloudGameController(GameControllerBase):
             ensure_data_directories()
             self.user_profile_path = str(browser_profile_dir() / self.cfg.browser_type.capitalize())
         else:
-        self.user_profile_path = os.path.join(self.BROWSER_INSTALL_PATH, "UserProfile", self.cfg.browser_type.capitalize())
+            self.user_profile_path = os.path.join(self.BROWSER_INSTALL_PATH, "UserProfile", self.cfg.browser_type.capitalize())
         # 判断环境变量 MARCH7TH_BROWSER_PATH 和 MARCH7TH_DRIVER_PATH，同时存在时优先使用
         env_browser_path = os.environ.get("MARCH7TH_BROWSER_PATH")
         env_driver_path = os.environ.get("MARCH7TH_DRIVER_PATH")
