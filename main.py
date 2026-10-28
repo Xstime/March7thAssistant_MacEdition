@@ -338,6 +338,10 @@ def run_workflow_action(workflow_name: str, workflow_step_path=None):
 
 def main(action=None, no_run_immediately=False, workflow_name=None, workflow_step_path=None):
     first_run()
+    if sys.platform == "darwin":
+        from utils.macos_task_policy import configure_for_task
+        configure_for_task(action or "main", cloud_game_enabled=cfg.cloud_game_enable)
+
     # 启动暂停控制器（仅在 GUI 注入了 MARCH7TH_CONTROL_FILE 时生效，其余场景惰性关闭）
     pause_ctl.start()
     telemetry.track_startup()

@@ -373,6 +373,7 @@ class CloudGameController(GameControllerBase):
         integrated = self.cfg.browser_type == "integrated"
         first_run = False
         browser_path, driver_path = self._prepare_browser_and_driver(browser_type, integrated)
+        self.browser_path = browser_path
 
         # 端口可用性检测：若配置端口被占，递增找一个空闲端口
         try:
@@ -447,6 +448,7 @@ class CloudGameController(GameControllerBase):
         for arg in self._get_browser_arguments(headless=headless):
             options.add_argument(arg)
         options.add_argument(f"--remote-debugging-port={actual_port}")
+        options.add_argument("--remote-debugging-address=127.0.0.1")
         if is_docker_started() or (integrated and sys.platform == "win32"):
             # Never disable the macOS browser sandbox merely because it is managed.
             options.add_argument("--no-sandbox")
@@ -832,10 +834,10 @@ class CloudGameController(GameControllerBase):
         self._prepare_browser_and_driver(browser_type="chrome", integrated=True)
 
     def is_integrated_browser_downloaded(self) -> bool:
+        """当前是否已经下载内置浏览器（macOS 通过实际返回路径判断）。"""
         if sys.platform == "darwin":
             paths = getattr(self, "_mac_integrated_browser", ())
             return len(paths) == 2 and all(os.path.isfile(p) for p in paths)
-        """当前是否已经下载内置浏览器"""
         return os.path.exists(self._get_integrated_browser_path()) and os.path.exists(self._get_integrated_driver_path())
 
     def get_m7a_browsers(self, headless=None) -> list[psutil.Process]:
@@ -847,18 +849,18 @@ class CloudGameController(GameControllerBase):
         """
         browsers: list[psutil.Process] = []
 
-        browser_names = {'chrome.exe', 'msedge.exe', 'chrome', 'msedge', 'google-chrome', 'google-chrome-stable'}
+        browser_names = {'chrome.exe', 'msedge.exe', 'chrome', 'msedge', 'google-chrome', 'google-chrome-stable', 'google chrome for testing', 'google chrome'}
         browser_tag = self.BROWSER_TAG
 
         for path_attr in ('browser_path',):
             if hasattr(self, path_attr):
                 p = getattr(self, path_attr)
                 if p:
-                    browser_names.add(os.path.basename(p))
+                    browser_names.add(os.path.basename(p).lower())
 
         env_path = os.environ.get('MARCH7TH_BROWSER_PATH')
         if env_path:
-            browser_names.add(os.path.basename(env_path))
+            browser_names.add(os.path.basename(env_path).lower())
 
         for proc in psutil.process_iter(['pid', 'name']):
             name = proc.info.get('name')

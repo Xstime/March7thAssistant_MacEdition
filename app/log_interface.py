@@ -1391,7 +1391,7 @@ class LogInterface(ScrollArea):
             executable_path = sys.executable
             arguments = ["--cli", command]
             self.process.setWorkingDirectory(os.getcwd())
-            self.appendLog(f"命令: {executable_path} --cli {command}\\n")
+            self.appendLog(f"命令: {executable_path} --cli {command}\n")
         elif getattr(sys, 'frozen', False):
             executable_path = os.path.abspath("./March7th Assistant.exe")
             if not os.path.exists(executable_path):
