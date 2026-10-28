@@ -1,0 +1,72 @@
+name: Native macOS ARM64 (experimental)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [macos-native]
+    paths:
+      - "app.py"
+      - "main.py"
+      - "app/**"
+      - "module/**"
+      - "utils/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "March7th MacEdition.spec"
+      - ".github/workflows/macos-native.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "app.py"
+      - "main.py"
+      - "app/**"
+      - "module/**"
+      - "utils/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "March7th MacEdition.spec"
+      - ".github/workflows/macos-native.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15-arm64
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --group dev --group build --python 3.12
+      - name: Compile Python sources
+        run: uv run --python 3.12 python -m compileall -q app.py main.py app module utils tests
+      - name: Test native workspace, browser and launcher contracts
+        run: uv run --python 3.12 pytest -q tests/test_utils/test_macos_paths.py tests/test_utils/test_macos_launcher.py
+      - name: Build unsigned development .app
+        run: uv run --python 3.12 pyinstaller --noconfirm "March7th MacEdition.spec"
+      - name: Confirm native executable architecture
+        run: |
+          file dist/March7thAssistant_MacEdition.app/Contents/MacOS/March7thAssistant_MacEdition
+          lipo -archs dist/March7thAssistant_MacEdition.app/Contents/MacOS/March7thAssistant_MacEdition | grep -w arm64
+      - name: Ad hoc sign development build
+        run: codesign --force --deep --sign - dist/March7thAssistant_MacEdition.app
+      - name: Package development disk image
+        run: |
+          hdiutil create -volname "March7thAssistant MacEdition" \
+            -srcfolder dist/March7thAssistant_MacEdition.app \
+            -ov -format UDZO dist/March7thAssistant_MacEdition-dev.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: March7thAssistant-MacEdition-ARM64-UNTESTED
+          path: |
+            dist/March7thAssistant_MacEdition.app
+            dist/March7thAssistant_MacEdition-dev.dmg
+          retention-days: 14
