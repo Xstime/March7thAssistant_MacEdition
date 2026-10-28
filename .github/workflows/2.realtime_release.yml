@@ -2,15 +2,8 @@ name: Build realtime release
 
 # 触发条件：手动触发或推送触发
 on:
+  # CI paused for macOS port troubleshooting; launch manually when ready.
   workflow_dispatch:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "**/*.py"
-      - "requirements.txt"
-      - "pyproject.toml"
-      - "uv.lock"
 
 jobs:
   build:

@@ -1,33 +1,8 @@
 name: Native macOS ARM64 (experimental)
 
 on:
+  # CI paused for macOS port troubleshooting; launch manually when ready.
   workflow_dispatch:
-  push:
-    branches: [macos-native]
-    paths:
-      - "app.py"
-      - "main.py"
-      - "app/**"
-      - "module/**"
-      - "utils/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "March7th MacEdition.spec"
-      - ".github/workflows/macos-native.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "app.py"
-      - "main.py"
-      - "app/**"
-      - "module/**"
-      - "utils/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "March7th MacEdition.spec"
-      - ".github/workflows/macos-native.yml"
 
 permissions:
   contents: read

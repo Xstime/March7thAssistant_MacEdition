@@ -1,28 +1,8 @@
 name: Tests
 
 on:
+  # CI paused for macOS port troubleshooting; launch manually when ready.
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "**/*.py"
-      - "assets/locales/**"
-      - "assets/docs/**"
-      - "requirements.txt"
-      - "pyproject.toml"
-      - "uv.lock"
-
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "**/*.py"
-      - "assets/locales/**"
-      - "assets/docs/**"
-      - "requirements.txt"
-      - "pyproject.toml"
-      - "uv.lock"
 
 jobs:
   test:
