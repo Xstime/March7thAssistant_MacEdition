@@ -22,6 +22,7 @@
 """
 import ast
 import re
+from pathlib import Path
 
 from tools.i18n import iter_source_files
 
@@ -89,7 +90,8 @@ def _parsed_sources():
             tree = ast.parse(source, str(path))
         except (SyntaxError, ValueError):
             continue
-        rel = str(path).replace("\\", "/").split("March7thAssistant/")[-1]
+        # Use the checkout root, not the upstream repository name: Forks may be renamed.
+        rel = path.resolve().relative_to(Path(__file__).resolve().parents[2]).as_posix()
         yield rel, tree
 
 

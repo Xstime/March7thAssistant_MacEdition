@@ -13,24 +13,25 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from utils.macos_paths import logs_dir
+from module.localization import tr
 
 
 class QRLoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("云·星穹铁道 - 扫码登录")
+        self.setWindowTitle(tr("云·星穹铁道 - 扫码登录"))
         self.setMinimumWidth(330)
         self.setModal(False)
         layout = QVBoxLayout(self)
-        caption = QLabel("请使用手机扫码并确认登录，二维码过期后会自动刷新。")
+        caption = QLabel(tr("请使用手机扫码并确认登录，二维码过期后会自动刷新。"))
         caption.setWordWrap(True)
         layout.addWidget(caption)
-        self.picture = QLabel("正在生成二维码…")
+        self.picture = QLabel(tr("正在生成二维码…"))
         self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.picture.setMinimumSize(290, 290)
         layout.addWidget(self.picture)
         buttons = QHBoxLayout()
-        close = QPushButton("关闭")
+        close = QPushButton(tr("关闭"))
         close.clicked.connect(self.hide)
         buttons.addStretch(1)
         buttons.addWidget(close)
@@ -39,7 +40,7 @@ class QRLoginDialog(QDialog):
     def set_image(self, filename: Path) -> bool:
         image = QPixmap(str(filename))
         if image.isNull():
-            self.picture.setText("二维码暂时不可用，稍后自动重试。")
+            self.picture.setText(tr("二维码暂时不可用，稍后自动重试。"))
             return False
         self.picture.setPixmap(image.scaled(
             290, 290,

@@ -494,7 +494,7 @@ class LogInterface(ScrollArea):
         self.buttonLayout.addWidget(self.manageScheduleButton)
         self.buttonLayout.addWidget(self.scheduleStatusLabel)
         if sys.platform == "darwin":
-            self.macPreviewButton = PushButton("游戏画面预览")
+            self.macPreviewButton = PushButton(tr("游戏画面预览"))
             self.macPreviewButton.clicked.connect(self._openMacPreview)
             self.buttonLayout.addWidget(self.macPreviewButton)
         self.buttonLayout.addStretch()
