@@ -199,6 +199,12 @@ class CloudGameController(GameControllerBase):
             self.log_warning(f"无窗口模式禁用 Pointer Lock 失败: {e}")
 
     def _prepare_browser_and_driver(self, browser_type: str, integrated: bool) -> tuple[str, str]:
+        if sys.platform == "darwin":
+            # Keep browser credentials and profile data outside the read-only .app.
+            from utils.macos_paths import browser_profile_dir, ensure_data_directories
+            ensure_data_directories()
+            self.user_profile_path = str(browser_profile_dir() / self.cfg.browser_type.capitalize())
+        else:
         self.user_profile_path = os.path.join(self.BROWSER_INSTALL_PATH, "UserProfile", self.cfg.browser_type.capitalize())
         # 判断环境变量 MARCH7TH_BROWSER_PATH 和 MARCH7TH_DRIVER_PATH，同时存在时优先使用
         env_browser_path = os.environ.get("MARCH7TH_BROWSER_PATH")
