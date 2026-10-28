@@ -493,6 +493,10 @@ class LogInterface(ScrollArea):
         # self.buttonLayout.addWidget(self.scheduleLabel)
         self.buttonLayout.addWidget(self.manageScheduleButton)
         self.buttonLayout.addWidget(self.scheduleStatusLabel)
+        if sys.platform == "darwin":
+            self.macPreviewButton = PushButton("游戏画面预览")
+            self.macPreviewButton.clicked.connect(self._openMacPreview)
+            self.buttonLayout.addWidget(self.macPreviewButton)
         self.buttonLayout.addStretch()
 
         # 日志显示区域
@@ -994,6 +998,15 @@ class LogInterface(ScrollArea):
             self.scheduleStatusLabel.setText(tr('下次：{time}').format(time=time_str))
         else:
             self.scheduleStatusLabel.setText(tr('尚未配置定时任务'))
+
+    def _openMacPreview(self):
+        """Preview the latest automation screenshot without another CDP call."""
+        from app.macos_preview import PreviewDialog
+        if not hasattr(self, "_mac_preview_dialog"):
+            self._mac_preview_dialog = PreviewDialog(self)
+        self._mac_preview_dialog.show()
+        self._mac_preview_dialog.raise_()
+        self._mac_preview_dialog.refresh(force=True)
 
     def _openScheduleManager(self):
         """打开定时任务管理对话框"""

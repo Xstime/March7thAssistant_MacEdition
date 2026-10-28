@@ -1646,7 +1646,11 @@ class CloudGameController(GameControllerBase):
         if self.cfg.cloud_game_use_paid_time:
             self.check_cloud_game_interruptions()
 
-        return self._take_browser_screenshot()
+        screenshot = self._take_browser_screenshot()
+        if screenshot and sys.platform == "darwin":
+            from utils.macos_preview import publish_preview
+            publish_preview(screenshot)
+        return screenshot
 
         # 帧截图有内存占用问题，暂不使用
         if prefer_frame:
