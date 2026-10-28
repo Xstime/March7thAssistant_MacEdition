@@ -221,7 +221,23 @@ class CloudGameController(GameControllerBase):
         platform_dir = self._get_platform_dir()
         self.log_debug(f"检测到系统平台: {platform.system()} {platform.machine()}, 使用目录: {platform_dir}")
 
-        if integrated:
+        if integrated and sys.platform == "darwin":
+            # Use an up-to-date Apple Silicon Chrome for Testing and matching
+            # ChromeDriver in Application Support, never inside the .app bundle.
+            try:
+                result = SeleniumManager().binary_paths([
+                    "--browser", "chrome",
+                    "--browser-version", "stable",
+                    "--cache-path", self.BROWSER_INSTALL_PATH,
+                    "--force-browser-download",
+                    "--skip-browser-in-path",
+                    "--skip-driver-in-path",
+                ])
+            except WebDriverException as e:
+                raise RuntimeError(f"无法安装 Apple Silicon 浏览器/驱动: {e}") from e
+            browser_path, driver_path = result["browser_path"], result["driver_path"]
+            self._mac_integrated_browser = (browser_path, driver_path)
+        elif integrated:
             browser_path = self._get_integrated_browser_path()
             driver_path = self._get_integrated_driver_path()
             if not os.path.exists(browser_path) or not os.path.exists(driver_path):
@@ -431,7 +447,8 @@ class CloudGameController(GameControllerBase):
         for arg in self._get_browser_arguments(headless=headless):
             options.add_argument(arg)
         options.add_argument(f"--remote-debugging-port={actual_port}")
-        if integrated or is_docker_started():  # 修复 Windows 部分情况下启动 Chrome 报错
+        if is_docker_started() or (integrated and sys.platform == "win32"):
+            # Never disable the macOS browser sandbox merely because it is managed.
             options.add_argument("--no-sandbox")
 
         # 清理失效的断链 (Broken Symlinks) 防止浏览器无法启动
@@ -815,6 +832,9 @@ class CloudGameController(GameControllerBase):
         self._prepare_browser_and_driver(browser_type="chrome", integrated=True)
 
     def is_integrated_browser_downloaded(self) -> bool:
+        if sys.platform == "darwin":
+            paths = getattr(self, "_mac_integrated_browser", ())
+            return len(paths) == 2 and all(os.path.isfile(p) for p in paths)
         """当前是否已经下载内置浏览器"""
         return os.path.exists(self._get_integrated_browser_path()) and os.path.exists(self._get_integrated_driver_path())
 

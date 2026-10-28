@@ -1386,7 +1386,13 @@ class LogInterface(ScrollArea):
         self.process.setProcessEnvironment(env)
 
         # 构建命令
-        if getattr(sys, 'frozen', False):
+        if getattr(sys, 'frozen', False) and sys.platform == "darwin":
+            # A macOS .app has one executable; dispatch tasks with --cli.
+            executable_path = sys.executable
+            arguments = ["--cli", command]
+            self.process.setWorkingDirectory(os.getcwd())
+            self.appendLog(f"命令: {executable_path} --cli {command}\\n")
+        elif getattr(sys, 'frozen', False):
             executable_path = os.path.abspath("./March7th Assistant.exe")
             if not os.path.exists(executable_path):
                 self.appendLog("错误: 未找到可执行文件 March7th Assistant.exe" + "\n")
@@ -1406,7 +1412,11 @@ class LogInterface(ScrollArea):
             self.appendLog(f"命令: {executable_path} {command}\n")
         else:
             executable_path = sys.executable
-            main_script = os.path.abspath("main.py")
+            if sys.platform == "darwin":
+                from utils.macos_paths import bundle_resource_dir
+                main_script = str(bundle_resource_dir() / "main.py")
+            else:
+                main_script = os.path.abspath("main.py")
             # 将工作目录设置为 main.py 所在目录，确保相对路径在子进程中有效
             try:
                 cwd = os.path.dirname(main_script) or os.getcwd()

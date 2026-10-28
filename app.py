@@ -7,6 +7,14 @@ if sys.platform == "darwin":
 else:
     os.chdir(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)))
 
+# PyInstaller bundles a single executable: --cli dispatches to the original
+# automation entrypoint before importing Qt. This supports GUI QProcess tasks.
+if sys.platform == "darwin" and getattr(sys, "frozen", False) and len(sys.argv) > 1 and sys.argv[1] == "--cli":
+    import runpy
+    sys.argv = [sys.argv[0], *sys.argv[2:]]
+    runpy.run_module("main", run_name="__main__", alter_sys=True)
+    raise SystemExit(0)
+
 import ctypes
 import argparse
 from utils.dpi import configure_dpi_awareness
@@ -306,6 +314,12 @@ if __name__ == "__main__":
         exit_on_complete=args.exit,
         start_minimized_to_tray=args.start_minimized_to_tray or _autostart_minimized,
     )
+
+    if sys.platform == "darwin":
+        # The QR code remains local; never forward its bytes to external services.
+        from app.macos_qr import QRLoginMonitor
+        w._mac_qr_monitor = QRLoginMonitor(w)
+
 
     # 注册主窗口并处理启动期间收到的挂起消息
     _main_window = w
