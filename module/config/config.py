@@ -9,6 +9,7 @@ import threading
 import traceback
 from ruamel.yaml import YAML
 from utils.singleton import SingletonMeta
+from utils.runtime_paths import log_dir, private_dir
 
 # ── 配置读写诊断日志 ──────────────────────────────────────────────────
 # 用于排查“更新后配置文件损坏/丢失”这类低概率问题：所有配置读写、
@@ -17,7 +18,7 @@ from utils.singleton import SingletonMeta
 # 已初始化则同时转发一份。注意 module.logger 反过来依赖 module.config，
 # 因此这里绝不能主动 import module.logger，只能在它已加载时转发。
 
-_DIAG_FILE = os.path.join("logs", "config_diag.log")
+_DIAG_FILE = os.path.join(log_dir(), "config_diag.log")
 _DIAG_FILE_MAX_BYTES = 5 * 1024 * 1024
 _DIAG_FILE_LOCK = threading.Lock()
 
@@ -43,7 +44,7 @@ def _diag(level, message):
         with _DIAG_FILE_LOCK:
             log_dir = os.path.dirname(_DIAG_FILE)
             if log_dir and not os.path.isdir(log_dir):
-                os.makedirs(log_dir, exist_ok=True)
+                private_dir(log_dir)
             try:
                 if os.path.exists(_DIAG_FILE) and os.path.getsize(_DIAG_FILE) > _DIAG_FILE_MAX_BYTES:
                     os.replace(_DIAG_FILE, _diag_rotated_path())
@@ -64,14 +65,14 @@ def _diag(level, message):
 
 
 def _file_fingerprint(path):
-    """返回文件的简要指纹（大小/sha256 前 12 位/开头字节），用于对比损坏前后内容"""
+    """返回文件大小及摘要，不记录可能包含凭据的配置内容。"""
     try:
         with open(path, "rb") as file:
             data = file.read()
     except OSError as e:
         return f"<读取失败: {e}>"
     digest = hashlib.sha256(data).hexdigest()[:12]
-    return f"size={len(data)} sha256={digest} head={data[:120]!r}"
+    return f"size={len(data)} sha256={digest}"
 
 
 # 读取重试：并发读写冲突（如另一进程正在 os.replace）只持续毫秒级，重试几次即可避开
@@ -155,7 +156,7 @@ class Config(metaclass=SingletonMeta):
     # 进程启动时通过环境变量 MARCH7TH_CONFIG_READONLY=1 声明。
     _readonly = False
 
-    def __init__(self, version_path, example_path, config_path):
+    def __init__(self, version_path, example_path, config_path, default_overrides=None):
         Config._readonly = os.environ.get("MARCH7TH_CONFIG_READONLY", "").lower() in ("1", "true")
         if Config._readonly:
             _diag("info", "当前进程以只读模式加载配置（更新器/清理器等旁观进程），不会写入配置文件")
@@ -164,6 +165,8 @@ class Config(metaclass=SingletonMeta):
         self.yaml = YAML()
         self.version = self._load_version(version_path)
         self.config = self._load_default_config(example_path)
+        if default_overrides:
+            self._update_config(self.config, default_overrides)
         self.config_path = config_path
         self._load_config()
 
@@ -502,7 +505,7 @@ class Config(metaclass=SingletonMeta):
 
     def set_value(self, key, value):
         """设置配置项的值并保存"""
-        _diag("debug", f"set_value: {key}={value!r}")
+        _diag("debug", f"set_value: {key}")
         # 读取外部改动但不再多写一次：save_config 只在最后落盘一次
         self._load_config(save=False)
         if isinstance(value, (list, dict, set)):

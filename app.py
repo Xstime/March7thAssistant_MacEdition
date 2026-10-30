@@ -1,7 +1,39 @@
 import os
 import sys
 # 将当前工作目录设置为程序所在的目录，确保无论从哪里执行，其工作目录都正确设置为程序本身的位置，避免路径错误。
-os.chdir(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)else os.path.dirname(os.path.abspath(__file__)))
+os.chdir((sys._MEIPASS if sys.platform == 'darwin' else os.path.dirname(sys.executable))
+         if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)))
+
+# macOS 的 GUI 与任务进程共享同一套内置 Python 和资源。
+if sys.platform == 'darwin' and getattr(sys, 'frozen', False) and sys.argv[1:2] == ['--task-worker']:
+    import runpy
+    del sys.argv[1]
+    runpy.run_module('main', run_name='__main__')
+    sys.exit(0)
+
+if sys.platform == 'darwin' and sys.argv[1:2] in (['--self-test-ocr'], ['--self-test-openvino']):
+    from utils.macos_selftest import run
+    sys.exit(run('openvino_cpu' if sys.argv[1] == '--self-test-openvino' else 'onnx_cpu'))
+
+if sys.platform == 'darwin' and sys.argv[1:2] == ['--self-test-browser']:
+    from utils.macos_selftest import run_browser
+    sys.exit(run_browser())
+
+if sys.platform == 'darwin' and sys.argv[1:2] == ['--self-test-browser-manager']:
+    from utils.macos_selftest import run_browser_manager
+    sys.exit(run_browser_manager())
+
+if sys.platform == 'darwin' and sys.argv[1:2] == ['--self-test-browser-install']:
+    from utils.macos_selftest import run_browser_install
+    sys.exit(run_browser_install())
+
+if sys.platform == 'darwin' and sys.argv[1:2] == ['--self-test-frame-health']:
+    from utils.macos_selftest import run_frame_health
+    sys.exit(run_frame_health())
+
+_self_test_ui = sys.platform == 'darwin' and sys.argv[1:2] == ['--self-test-ui']
+if _self_test_ui:
+    del sys.argv[1]
 
 import ctypes
 import argparse
@@ -117,7 +149,7 @@ _autostart_minimized = False
 if args.autostart:
     try:
         from module.config import cfg as _autostart_cfg
-        if not _autostart_cfg.get_value("autostart_open_gui", True):
+        if sys.platform != 'darwin' and not _autostart_cfg.get_value("autostart_open_gui", True):
             # 不打开图形界面：交由命令行版在命令行窗口中执行所选任务（与手动运行一致）
             from utils.autostart import launch_headless_task
             launch_headless_task(_autostart_cfg.get_value("autostart_headless_task") or "main")
@@ -300,8 +332,13 @@ if __name__ == "__main__":
     w = MainWindow(
         task=_startup_task,
         exit_on_complete=args.exit,
-        start_minimized_to_tray=args.start_minimized_to_tray or _autostart_minimized,
+        start_minimized_to_tray=args.start_minimized_to_tray or _autostart_minimized or _self_test_ui,
     )
+
+    if _self_test_ui:
+        from PySide6.QtCore import QTimer
+        print('MACOS_MAIN_WINDOW_READY', flush=True)
+        QTimer.singleShot(1000, w.quitApp)
 
     # 注册主窗口并处理启动期间收到的挂起消息
     _main_window = w

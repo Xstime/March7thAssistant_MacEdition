@@ -1,4 +1,5 @@
 from enum import Enum
+import os
 from PySide6.QtCore import QThread, Signal
 
 
@@ -32,7 +33,9 @@ class GameLaunchThread(QThread):
                 self.finished_signal.emit(GameStartStatus.SUCCESS)
             elif self.cfg.cloud_game_enable:
                 # 云游戏启动失败，判断是下载问题还是启动问题
-                if not self.game.is_integrated_browser_downloaded():
+                explicit_browser = os.environ.get('MARCH7TH_BROWSER_PATH') and os.environ.get('MARCH7TH_DRIVER_PATH')
+                if (self.cfg.browser_type == 'integrated' and not explicit_browser
+                        and not self.game.is_integrated_browser_downloaded()):
                     self.finished_signal.emit(GameStartStatus.BROWSER_DOWNLOAD_FAIL)
                 else:
                     self.finished_signal.emit(GameStartStatus.BROWSER_LAUNCH_FAIL)

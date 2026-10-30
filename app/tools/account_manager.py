@@ -2,12 +2,13 @@ import base64
 import os
 from utils.registry.gameaccount import gamereg_uid, gamereg_export, gamereg_import, gamereg_delete_all
 from module.logger import log
+from utils.runtime_paths import data_dir as app_data_dir
 
-data_dir = "settings/accounts"
+data_dir = os.path.join(app_data_dir(), "settings", "accounts")
 xor_key = "TI4ftRSDaP63kBxxoLoZ5KpVmRBz00JikzLNweryzZ4wecWJxJO9tbxlH9YDvjAr"
 
 if not os.path.exists(data_dir):
-    os.makedirs(data_dir)
+    os.makedirs(data_dir, mode=0o700, exist_ok=True)
 
 class Account:
     def __init__(self, account_id: int, account_name: str, timestamp: int = 0):

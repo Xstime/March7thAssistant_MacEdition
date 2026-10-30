@@ -87,6 +87,28 @@ def next_scheduled_datetime(task, now: QDateTime) -> QDateTime | None:
     return None
 
 
+def missed_schedule_slot(task, previous_minute: int, now: QDateTime) -> int | None:
+    """Most recent missed slot within seven days, excluding the current minute."""
+    scheduled_time = parse_schedule_time(task.get('time', '00:00'))
+    weekdays = task_weekdays(task)
+    if scheduled_time is None or not weekdays:
+        return None
+    current_minute = now.toSecsSinceEpoch() // 60
+    for days_ago in range(8):
+        date = now.date().addDays(-days_ago)
+        if date.dayOfWeek() not in weekdays:
+            continue
+        candidate = QDateTime(now)
+        candidate.setDate(date)
+        candidate.setTime(scheduled_time)
+        if not candidate.isValid():
+            continue
+        slot = candidate.toSecsSinceEpoch()
+        if previous_minute < slot // 60 < current_minute:
+            return slot
+    return None
+
+
 def task_timeout_seconds(task) -> int:
     try:
         return int(task.get('timeout', 0) or 0)

@@ -8,6 +8,7 @@
 """
 
 from typing import Union
+import sys
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QIcon
@@ -48,6 +49,9 @@ class AutostartConfigDialog(MessageBoxBase):
         # 启动后是否打开图形界面
         self.openGuiCheck = CheckBox(tr("登录后打开图形界面"), self.widget)
         self.openGuiCheck.setChecked(bool(cfg.get_value("autostart_open_gui", True)))
+        if sys.platform == 'darwin':
+            self.openGuiCheck.setChecked(True)
+            self.openGuiCheck.setEnabled(False)
 
         # 打开图形界面后是否最小化
         self.minimizeCheck = CheckBox(tr("打开图形界面后最小化到托盘"), self.widget)

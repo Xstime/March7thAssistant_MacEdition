@@ -13,6 +13,7 @@ class Tasks:
         self.crop = (243.0 / 1920, 377.0 / 1080, 1428.0 / 1920, 528.0 / 1080)
         self.task_mappings = self._load_config(config_example_path)
         self.daily_tasks = {}
+        self.activity_full = False
 
     def _load_config(self, config_example_path):
         try:
@@ -34,6 +35,7 @@ class Tasks:
         for coords, text_data in result:
             if "本日活跃度已满" in text_data[0]:
                 log.info("检测到本日活跃度已满提示，跳过后续任务检测")
+                self.activity_full = True
                 return False
         merged_texts = self._merge_ocr_blocks(result, x_gap=100)
         log.debug(f"每日实训分栏拼接的文本: {merged_texts}")

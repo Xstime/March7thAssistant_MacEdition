@@ -1,0 +1,42 @@
+{
+  "passed": true,
+  "requested_engine": "openvino_cpu",
+  "actual_engine": "openvino_cpu",
+  "architecture": "arm64",
+  "macos": "27.2",
+  "logical_cpu_count": 10,
+  "initialization_seconds": 0.8882,
+  "total_wall_seconds": 7.545,
+  "process_cpu_seconds": 19.278,
+  "average_process_cores": 2.56,
+  "baseline_rss_mib": 39.4,
+  "peak_sampled_rss_mib": 845.3,
+  "rss_after_run_mib": 430.5,
+  "peak_sampled_threads": 20,
+  "full_crop_origin_difference_pixels": 8.0,
+  "samples": {
+    "full": {
+      "iterations": 8,
+      "median_seconds": 0.3097,
+      "max_seconds": 0.5311,
+      "first_seconds": 0.5311,
+      "box_origin": [
+        102.0,
+        72.0
+      ],
+      "box_drift_pixels": 0.0
+    },
+    "crop": {
+      "iterations": 8,
+      "median_seconds": 0.4963,
+      "max_seconds": 0.7092,
+      "first_seconds": 0.708,
+      "box_origin": [
+        94.0,
+        65.0
+      ],
+      "box_drift_pixels": 0.0
+    }
+  },
+  "scope": "synthetic text; not a real game frame"
+}

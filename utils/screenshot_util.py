@@ -1,5 +1,7 @@
 import os
+import sys
 from datetime import datetime
+from utils.runtime_paths import log_dir
 
 
 def save_error_screenshot(logger):
@@ -10,6 +12,12 @@ def save_error_screenshot(logger):
     :param logger: Logger实例，用于记录日志
     :return: 截图保存路径，如果失败则返回None。
     """
+    # An error may occur while a login QR code or other credentials are visible.
+    # Keep macOS error diagnostics text-only rather than saving or forwarding it.
+    if sys.platform == 'darwin':
+        logger.debug("macOS 错误诊断不自动保存画面，避免记录登录信息")
+        return None
+
     try:
         # 延迟导入以避免循环依赖
         from module.automation import auto
@@ -23,7 +31,7 @@ def save_error_screenshot(logger):
                 return None
 
         # 确保截图目录存在
-        screenshot_dir = os.path.join("logs", "screenshots")
+        screenshot_dir = os.path.join(log_dir(), "screenshots")
         if not os.path.exists(screenshot_dir):
             os.makedirs(screenshot_dir)
 

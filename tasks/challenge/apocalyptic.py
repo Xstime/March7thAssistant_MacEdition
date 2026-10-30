@@ -19,10 +19,20 @@ class Apocalyptic(BaseChallenge):
     def run(self):
         '''执行挑战'''
         log.hr(f"准备{self.name}", 0)
-        if self.prepare():
-            self.start_challenges()
-            self.collect_rewards()
+        prepared = self.prepare()
+        if prepared is None:  # 当前周期已满星
+            return True
+        if not prepared or not self.start_challenges():
+            log.error(f"{self.name}未能完成")
+            return False
+        if self.max_level > 0:
+            if not self.collect_rewards():
+                return False
+        else:
+            # 配置范围内的关卡均已满星。
+            self.save_timestamp_into_config()
         log.hr("完成", 2)
+        return True
 
     def prepare(self):
         '''切换场景并判断是否刷新'''
@@ -37,7 +47,7 @@ class Apocalyptic(BaseChallenge):
         if self.check_star_in_ocr_results(auto.ocr_result):
             # log.info(f"已满星，跳过")
             self.save_timestamp_into_config()
-            return False
+            return None
         time.sleep(1)
         if not auto.click_element("传送", "text", max_retries=10, need_ocr=False):
             return False
@@ -70,7 +80,7 @@ class Apocalyptic(BaseChallenge):
             top_left = self.find_level(level)
             if not top_left:
                 log.error(f"查找第{level}层失败")
-                break
+                return False
             # log.info(f"level:{level} | top_left:{top_left}")
             # 判断星数
             stars = self.judge_stars(top_left)
@@ -82,7 +92,7 @@ class Apocalyptic(BaseChallenge):
 
             if not self.start_challenge(level):
                 log.error(f"第{level}层挑战失败")
-                break
+                return False
             time.sleep(3)
             if auto.find_element("3星通关所有", 'text', include=True):
                 auto.click_element("确认", 'text', max_retries=10, include=True)
@@ -90,6 +100,7 @@ class Apocalyptic(BaseChallenge):
             time.sleep(2)
 
             screen.wait_for_screen_change('apocalyptic')
+        return True
 
     def find_level(self, level, max_retries=4):
         '''查找关卡'''
@@ -312,21 +323,35 @@ class Apocalyptic(BaseChallenge):
     def collect_rewards(self):
         '''领取奖励'''
         if self.max_level > 0:
-            self.save_timestamp_into_config()
             time.sleep(2)
             screen.wait_for_screen_change('apocalyptic')
             # 领取星琼
             if auto.click_element("./assets/images/share/base/RedExclamationMark.png", "image", 0.9, max_retries=5, crop=(24.0 / 1920, 769.0 / 1080, 221.0 / 1920, 138.0 / 1080)):
                 time.sleep(1)
 
-                while auto.click_element("./assets/images/forgottenhall/receive.png", "image", 0.9, crop=(1081.0 / 1920, 171.0 / 1080, 500.0 / 1920, 736.0 / 1080)):
-                    auto.click_element("./assets/images/zh_CN/base/click_close.png", "image", 0.9, max_retries=10)
+                claimed = 0
+                for _ in range(50):
+                    if not auto.click_element("./assets/images/forgottenhall/receive.png", "image", 0.9, crop=(1081.0 / 1920, 171.0 / 1080, 500.0 / 1920, 736.0 / 1080)):
+                        break
+                    claimed += 1
+                    if not auto.click_element("./assets/images/zh_CN/base/click_close.png", "image", 0.9, max_retries=10):
+                        log.error("领取奖励后无法关闭提示")
+                        return False
                     time.sleep(1)
+                else:
+                    log.error("领取奖励次数超过上限")
+                    return False
+                if not claimed:
+                    log.error("未能确认领取奖励")
+                    return False
+                self.save_timestamp_into_config()
 
                 Base.send_notification_with_screenshot(cfg.notify_template['LevelCleared'].format(name=self.name, level=self.max_level), NotificationLevel.ALL)
 
                 auto.press_key("esc")
                 time.sleep(1)
+                return True
             else:
                 log.error("领取星琼失败")
                 Base.send_notification_with_screenshot(cfg.notify_template['LevelClearedWithIssue'].format(name=self.name, level=self.max_level), NotificationLevel.ERROR)
+                return False

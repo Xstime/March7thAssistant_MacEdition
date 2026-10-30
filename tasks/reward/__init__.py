@@ -44,15 +44,23 @@ class RewardManager:
 
     def check_and_collect_rewards(self):
         log.hr("开始领取奖励", 0)
+        failed = []
 
         for reward_type, (image_path, confidence, crop) in self.reward_mapping.items():
             if self._find_reward(image_path, confidence, crop):
-                self.reward_instances[reward_type].start()
+                instance = self.reward_instances[reward_type]
+                result = instance.start()
+                if instance.enabled and reward_type in {'mail', 'assist', 'achievement'} and result is False:
+                    failed.append(instance.name)
             else:
                 reward_name = self._get_reward_name(reward_type)
                 log.info(f"未检测到{reward_name}奖励")
 
+        if failed:
+            log.warning("奖励领取未确认：" + '、'.join(failed))
+            return False
         log.hr("完成", 2)
+        return True
 
     def check_and_collect_specific_reward(self, reward_type):
         reward_name = self._get_reward_name(reward_type)
@@ -61,14 +69,20 @@ class RewardManager:
 
         if reward_type in self.reward_mapping:
             image_path, confidence, crop = self.reward_mapping[reward_type]
-            if self._find_reward(image_path, confidence, crop):
+            # A completed daily may have no remaining red badge. Visit it to
+            # verify its 500-point indicator rather than treating absence of a
+            # badge as proof of either success or failure.
+            if reward_type == "quest" or self._find_reward(image_path, confidence, crop):
                 result = self.reward_instances[reward_type].start()
             else:
                 log.info(f"未检测到{reward_name}奖励")
         else:
             log.error(f"未知的奖励类型： {reward_type}")
 
-        log.hr("完成", 2)
+        if result is False:
+            log.warning(f"{reward_name}奖励未领取或状态未确认")
+        else:
+            log.hr("完成", 2)
         return result
 
     def _get_reward_name(self, reward_type):
@@ -86,7 +100,7 @@ def start():
         return
 
     reward_manager = RewardManager()
-    reward_manager.check_and_collect_rewards()
+    return reward_manager.check_and_collect_rewards()
 
 
 def start_specific(reward_type):

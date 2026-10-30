@@ -1,3 +1,5 @@
+import re
+
 from module.automation import auto
 from module.logger import log
 from .activitytemplate import ActivityTemplate
@@ -11,13 +13,16 @@ class DoubleActivity(ActivityTemplate):
         self.instance_names = instance_names
         
     def _get_reward_count(self):
-        auto.find_element("奖励剩余次数", "text", max_retries=10, crop=(960.0 / 1920, 125.0 / 1080, 940.0 / 1920, 846.0 / 1080), include=True)
+        if not auto.find_element("奖励剩余次数", "text", max_retries=10, crop=(960.0 / 1920, 125.0 / 1080, 940.0 / 1920, 846.0 / 1080), include=True):
+            return None
         for box in auto.ocr_result:
             text = box[1][0]
-            if "/" in text:
-                if text.split("/")[0].isdigit():
-                    return int(text.split("/")[0])
-        return 0
+            match = re.search(r"(?<!\d)(\d+)\s*[/／]\s*(\d+)(?!\d)", text)
+            if match:
+                remaining, total = map(int, match.groups())
+                if total > 0 and remaining <= total:
+                    return remaining
+        return None
 
     def _run_instances(self, reward_count):
         if reward_count == 0:
@@ -41,6 +46,9 @@ class DoubleActivity(ActivityTemplate):
 
     def run(self):
         reward_count = self._get_reward_count()
+        if reward_count is None:
+            log.warning(f"{self.name}无法识别奖励剩余次数，将重试")
+            return False
         if reward_count == 0:
             return True
 

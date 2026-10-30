@@ -2,7 +2,7 @@ from PySide6.QtCore import Qt, QUrl, QObject, QEvent, QPoint, QThread, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QWidget, QLabel, QFileDialog, QVBoxLayout, QStackedWidget, QSpacerItem, QScroller, QScrollerProperties, QScrollArea, QFrame, QApplication
 from qfluentwidgets import FluentIcon as FIF
-from qfluentwidgets import SettingCardGroup, PushSettingCard, ScrollArea, InfoBar, InfoBarPosition, PrimaryPushSettingCard, MessageBox, PushButton, StateToolTip
+from qfluentwidgets import SettingCard, SettingCardGroup, PushSettingCard, ScrollArea, InfoBar, InfoBarPosition, PrimaryPushSettingCard, MessageBox, PushButton, StateToolTip
 from app.sub_interfaces.accounts_interface import accounts_interface
 from .common.style_sheet import StyleSheet
 from .common.icon import UiIcon, BrandIcon
@@ -693,7 +693,7 @@ class SettingInterface(ScrollArea):
             UiIcon.OPTIONS,
             tr('类别'),
             '',
-            texts={tr('差分宇宙'): 'divergent', tr('模拟宇宙'): 'universe'}
+            texts={tr('差分宇宙'): 'divergent', tr('模拟宇宙（macOS 不支持）') if sys.platform == 'darwin' else tr('模拟宇宙'): 'universe'}
         )
         self.divergentTypeCard = ComboBoxSettingCard2(
             "divergent_type",
@@ -773,7 +773,7 @@ class SettingInterface(ScrollArea):
             "fight_enable",
             "fight_timestamp",
             UiIcon.MAP,
-            tr('启用锄大地 (Fhoe-Rail)'),
+            tr('启用锄大地（macOS 不支持）') if sys.platform == 'darwin' else tr('启用锄大地 (Fhoe-Rail)'),
             tr("上次运行锄大地的时间"),
             ""
         )
@@ -936,9 +936,15 @@ class SettingInterface(ScrollArea):
         self.cloudGameEnableCard = SwitchSettingCard1(
             UiIcon.CLOUD,
             tr("使用“云·星穹铁道”"),
-            tr("开启后，将改用云·星穹铁道来执行清体力等自动化任务。无需固定窗口，可在后台运行。（模拟宇宙和锄大地仍需保持窗口全屏）"),
+            ((tr("macOS 版本使用云游戏；Windows 本地客户端、传统模拟宇宙和锄大地不受支持。")
+              if cfg.cloud_game_enable else
+              tr("云游戏已被环境变量关闭；macOS 不支持 Windows 本地客户端，请移除该环境变量后重启。"))
+             if sys.platform == 'darwin' else
+             tr("开启后，将改用云·星穹铁道来执行清体力等自动化任务。无需固定窗口，可在后台运行。（模拟宇宙和锄大地仍需保持窗口全屏）")),
             "cloud_game_enable"
         )
+        if sys.platform == 'darwin':
+            self.cloudGameEnableCard.switchButton.setEnabled(False)
         self.cloudGameFullScreenCard = SwitchSettingCard1(
             FIF.FULL_SCREEN,
             tr("全屏运行"),
@@ -1004,14 +1010,18 @@ class SettingInterface(ScrollArea):
             None,
             "browser_persistent_enable"
         )
-        self.browserScaleCard = ComboBoxSettingCard2(
-            "browser_scale_factor",
-            FIF.ZOOM,
-            tr("浏览器画面缩放（DPI）"),
-            tr("非 1920x1080 屏幕下，云游戏画面无法铺满屏幕，可以调整这个值改变画面缩放"),
-            texts={'50%': 0.5, '67%': 0.67, '75%': 0.75, '80%': 0.80, '90%': 0.90, tr('无缩放（100%）'): 1.0,
-                   '110%': 1.10, '125%': 1.25, '150%': 1.5, '175%': 1.75, '200%': 2.0}
-        )
+        if sys.platform == 'darwin':
+            self.browserScaleCard = SettingCard(
+                FIF.ZOOM, tr("浏览器画面缩放"),
+                tr("自动适配 Mac 显示器和系统缩放；游戏识别保持 1920×1080。")
+            )
+        else:
+            self.browserScaleCard = ComboBoxSettingCard2(
+                "browser_scale_factor", FIF.ZOOM, tr("浏览器画面缩放（DPI）"),
+                tr("非 1920x1080 屏幕下，云游戏画面无法铺满屏幕，可以调整这个值改变画面缩放"),
+                texts={'50%': 0.5, '67%': 0.67, '75%': 0.75, '80%': 0.80, '90%': 0.90, tr('无缩放（100%）'): 1.0,
+                       '110%': 1.10, '125%': 1.25, '150%': 1.5, '175%': 1.75, '200%': 2.0}
+            )
         self.browserLaunchArgCard = PushSettingCardEval(
             "修改",
             FIF.CODE,
@@ -1022,7 +1032,8 @@ class SettingInterface(ScrollArea):
             "browser_headless_enable",
             UiIcon.EYE_OFF,
             tr("启用无窗口模式（后台运行）"),
-            tr("不支持模拟宇宙和锄大地")
+            (tr("传统模拟宇宙和锄大地仅支持 Windows；其他任务的无窗口兼容性仍需验证。")
+             if sys.platform == 'darwin' else tr("不支持模拟宇宙和锄大地"))
         )
         self.browserHeadlessRestartCard = SwitchSettingCard1(
             FIF.SYNC,
@@ -1090,6 +1101,13 @@ class SettingInterface(ScrollArea):
         #     '导入配置',
         #     '选择需要导入的 config.yaml 文件（重启后生效）'
         # )
+        if sys.platform == 'darwin':
+            self.importMacConfigCard = PushSettingCard(
+                '选择文件', FIF.ADD_TO, '导入任务设置',
+                '从上游或 Docker 的 config.yaml 导入非敏感任务设置；当前配置将先备份。')
+            self.macNotificationsCard = SwitchSettingCard1(
+                FIF.INFO, '系统通知', '显示任务状态和扫码提醒；具体通知权限由 macOS 管理。',
+                'macos_system_notifications')
         self.pauseAfterSuccess = SwitchSettingCard1(
             FIF.SYNC,
             tr('成功后暂停程序'),
@@ -2518,11 +2536,12 @@ class SettingInterface(ScrollArea):
             tr("默认开启，可以避免悬浮窗等干扰"),
             "use_background_screenshot"
         )
-        if sys.platform == 'win32':
+        if sys.platform == 'win32' or (sys.platform == 'darwin' and getattr(sys, 'frozen', False)):
             self.autostartCard = AutostartSettingCard(
                 FIF.GAME,
                 tr('在用户登录时启动'),
-                tr("登录后自动启动，点击「配置」进行详细设置；无人值守可能需要自行配置 Windows 自动登录")
+                ('登录后自动启动；关闭应用后定时任务不会运行。' if sys.platform == 'darwin' else
+                 tr("登录后自动启动，点击「配置」进行详细设置；无人值守可能需要自行配置 Windows 自动登录"))
             )
         if sys.platform == 'win32':
             self.debugModeEnableCard = SwitchSettingCard1(
@@ -2821,6 +2840,9 @@ class SettingInterface(ScrollArea):
         ])
         self.ProgramGroup.addSettingCard(self.startGameTimeoutCard)
         # self.ProgramGroup.addSettingCard(self.importConfigCard)
+        if sys.platform == 'darwin':
+            self.ProgramGroup.addSettingCard(self.importMacConfigCard)
+            self.ProgramGroup.addSettingCard(self.macNotificationsCard)
         self.ProgramGroup.addSettingCard(self.pauseAfterSuccess)
         self.ProgramGroup.addSettingCard(self.exitAfterFailure)
         self.ProgramGroup.addSettingCard(self.afterFinishCard)
@@ -2851,8 +2873,9 @@ class SettingInterface(ScrollArea):
         self.MiscGroup.addSettingCard(self.autoSetResolutionEnableCard)
         self.MiscGroup.addSettingCard(self.autoSetGamePathEnableCard)
         self.MiscGroup.addSettingCard(self.useBackgroundScreenshotCard)
-        if sys.platform == 'win32':
+        if hasattr(self, 'autostartCard'):
             self.MiscGroup.addSettingCard(self.autostartCard)
+        if sys.platform == 'win32':
             self.MiscGroup.addSettingCard(self.debugModeEnableCard)
         self.MiscGroup.addSettingCard(self.hotkeyCard)
 
@@ -2934,6 +2957,8 @@ class SettingInterface(ScrollArea):
                 card.expandStateChanged.connect(self.__onExpandableCardStateChanged)
 
         # self.importConfigCard.clicked.connect(self.__onImportConfigCardClicked)
+        if sys.platform == 'darwin':
+            self.importMacConfigCard.clicked.connect(self.__onImportMacConfig)
         self.gamePathCard.clicked.connect(self.__onGamePathCardClicked)
         self.launcherPathCard.clicked.connect(self.__onLauncherPathCardClicked)
         self.ScriptPathCard.clicked.connect(self.__onScriptPathCardClicked)
@@ -3330,6 +3355,22 @@ class SettingInterface(ScrollArea):
     #         cfg._load_config(configdir)
     #         cfg.save_config()
     #         self.__showRestartTooltip()
+
+    def __onImportMacConfig(self):
+        from utils.config_import import import_task_settings
+        path, _ = QFileDialog.getOpenFileName(self, '选择上游配置文件', '', 'YAML (*.yaml *.yml)')
+        if not path:
+            return
+        try:
+            count, backup = import_task_settings(path, cfg)
+            message = f'已导入 {count} 项任务设置，请重新打开设置页面。'
+            if backup:
+                message += f' 原配置备份：{backup}'
+            InfoBar.success(title=tr('导入完成'), content=message, orient=Qt.Horizontal,
+                            isClosable=True, position=InfoBarPosition.TOP, duration=8000, parent=self)
+        except Exception as error:
+            InfoBar.error(title=tr('导入失败'), content=str(error), orient=Qt.Horizontal,
+                          isClosable=True, position=InfoBarPosition.TOP, duration=8000, parent=self)
 
     def __onGamePathCardClicked(self):
         game_path, _ = QFileDialog.getOpenFileName(

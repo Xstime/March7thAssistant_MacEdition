@@ -10,6 +10,7 @@ from .starrailcontroller import StarRailController
 
 from utils.date import Date
 from utils.console import pause_on_success
+from utils.task_progress import set_phase
 from tasks.power.power import Power
 from module.game import cloud_game, get_game_controller
 from module.game.cloud import CloudGameLoginTimeoutError
@@ -220,6 +221,7 @@ def start_game():
             else:
                 starrail = StarRailController(cfg=cfg, logger=log)
                 start_local_game(starrail)
+            set_phase('recognizing', '检查游戏画面')
             if not wait_until(lambda: screen.get_current_screen(), 6 * 60):
                 log.error("获取当前界面超时")
                 # 确保在重试前停止游戏
@@ -243,6 +245,8 @@ def start_game():
                     update_via_launcher()
             if retry == MAX_RETRY - 1:
                 raise  # 如果是最后一次尝试，则重新抛出异常
+    else:
+        raise TimeoutError("多次启动后仍无法识别游戏画面，任务未执行")
 
 
 def stop(detect_loop=False):
@@ -260,6 +264,7 @@ def stop(detect_loop=False):
     if detect_loop and cfg.after_finish == "Loop":
         if cfg.play_audio:
             play_audio()
+        set_phase('waiting', '等待下一次运行')
         after_finish_is_loop()
     else:
         if detect_loop:

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 import unicodedata
 from utils.singleton import SingletonMeta
+from utils.runtime_paths import log_dir, private_dir
 
 from .coloredformatter import ColoredFormatter
 from .colorcodefilter import ColorCodeFilter
@@ -44,7 +45,7 @@ class Logger(metaclass=SingletonMeta):
 
         # 文件日志
         self._ensure_log_directory_exists()
-        file_handler = logging.FileHandler(f"./logs/{self._current_datetime()}.log", encoding="utf-8")
+        file_handler = logging.FileHandler(os.path.join(log_dir(), f"{self._current_datetime()}.log"), encoding="utf-8")
         file_formatter = ColorCodeFilter('%(asctime)s | %(levelname)s | %(message)s')
         file_handler.setFormatter(file_formatter)
         self.logger.addHandler(file_handler)
@@ -63,31 +64,30 @@ class Logger(metaclass=SingletonMeta):
 
         # 文件日志
         self._ensure_log_directory_exists()
-        file_handler = logging.FileHandler(f"./logs/{self._current_datetime()}.log", encoding="utf-8")
+        file_handler = logging.FileHandler(os.path.join(log_dir(), f"{self._current_datetime()}.log"), encoding="utf-8")
         file_formatter = logging.Formatter('%(message)s')
         file_handler.setFormatter(file_formatter)
         self.logger_title.addHandler(file_handler)
 
     def _ensure_log_directory_exists(self):
         """确保日志目录存在，不存在则创建."""
-        if not os.path.exists("logs"):
-            os.makedirs("logs")
+        private_dir(log_dir())
 
     def _cleanup_old_logs(self):
         """清理超过保留天数的旧日志文件."""
         try:
-            if not os.path.exists("logs"):
+            if not os.path.exists(log_dir()):
                 return
             
             current_time = datetime.now()
             cutoff_time = current_time - timedelta(days=self._retention_days)
-            logs_dir = os.path.abspath("logs")
+            logs_dir = os.path.abspath(log_dir())
             
-            for filename in os.listdir("logs"):
+            for filename in os.listdir(logs_dir):
                 if not filename.endswith(".log"):
                     continue
                 
-                file_path = os.path.join("logs", filename)
+                file_path = os.path.join(logs_dir, filename)
                 
                 # 验证文件路径仍在logs目录内，防止目录遍历攻击
                 if not os.path.abspath(file_path).startswith(logs_dir):

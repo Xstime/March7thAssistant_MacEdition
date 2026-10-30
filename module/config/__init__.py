@@ -1,11 +1,13 @@
 import os
 import sys
 from module.config.config import Config
+from utils.runtime_paths import data_dir, private_dir
 
 
 VERSION_PATH = "./assets/config/version.txt"
 EXAMPLE_PATH = "./assets/config/config.example.yaml"
-CONFIG_PATH = "./config.yaml"
+CONFIG_PATH = (os.path.join(private_dir(data_dir()), "config.yaml")
+               if sys.platform == "darwin" else "./config.yaml")
 
 # 环境变量优先级说明：
 # 以下配置项支持通过环境变量覆盖（在 Config 类的 get_value/__getattr__ 中处理）：
@@ -18,10 +20,16 @@ CONFIG_PATH = "./config.yaml"
 if sys.platform != 'win32':
     os.environ.setdefault("MARCH7TH_CLOUD_GAME_ENABLE", "true")
     
-cfg = Config(VERSION_PATH, EXAMPLE_PATH, CONFIG_PATH)
+_mac_defaults = {"cloud_game_enable": True, "browser_headless_enable": True,
+                 "browser_headless_restart_on_not_logged_in": False,
+                 "ocr_gpu_acceleration": "onnx_cpu", "telemetry_enable": False,
+                 "browser_download_use_mirror": False,
+                 "check_update": False} if sys.platform == 'darwin' else None
+cfg = Config(VERSION_PATH, EXAMPLE_PATH, CONFIG_PATH, default_overrides=_mac_defaults)
 
 cfg.env = os.environ.copy()
-cfg.env['PATH'] = os.path.dirname(cfg.python_exe_path) + ';' + cfg.env['PATH']
+if cfg.python_exe_path:
+    cfg.env['PATH'] = os.path.dirname(cfg.python_exe_path) + os.pathsep + cfg.env['PATH']
 cfg.useragent = {"User-Agent": f"March7thAssistant/{cfg.version}"}
 
 if sys.platform == 'win32':

@@ -431,6 +431,7 @@ scheduled_run_time: "04:00" # 旧配置：单一定时运行时间（仅用于�
 # 定时任务冲突处理：当计划任务触发且当前已有任务在运行时的处理策略
 # 可选值：skip（跳过需要运行的任务），stop（停止正在运行的任务并启动计划任务）
 scheduled_on_conflict: skip
+macos_schedule_catch_up: false # macOS 唤醒或应用重启后是否补跑最近一项延误任务。
 # 链式任务失败后是否继续执行后续任务
 # true：继续执行后续任务，false：停止执行后续任务
 scheduled_chain_continue_on_failure: true
@@ -504,6 +505,7 @@ notify_template:
 
 # 消息推送总开关
 notification_enable: true # 是否启用消息推送。true 开启，false 关闭。关闭后所有消息推送将被禁用。
+macos_system_notifications: true # macOS 系统通知；可在程序设置中关闭。
 
 # 通知级别设置
 notify_level: all # 通知级别，可选 all（推送所有通知）或 error（仅推送错误和异常通知）。默认为 all。

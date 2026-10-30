@@ -207,7 +207,13 @@ class MenuItemRow(QWidget):
         self.label_edit.setPlaceholderText(tr("菜单项名称"))
 
         self.task_combo = ComboBox()
-        self.task_combo.addItems(self._task_labels)
+        if sys.platform == 'darwin':
+            from utils.macos_capabilities import unsupported_reason
+            choices = [label + ('（macOS 不支持）' if unsupported_reason(key) else '')
+                       for key, label in zip(self._task_keys, self._task_labels)]
+        else:
+            choices = self._task_labels
+        self.task_combo.addItems(choices)
         if task_id in self._task_keys:
             self.task_combo.setCurrentIndex(self._task_keys.index(task_id))
 
@@ -333,7 +339,13 @@ class CardEditorWidget(QFrame):
         self.task_combo = ComboBox()
         self._task_keys = list(ALL_TASKS.keys())
         self._task_labels = [tr(v) for v in ALL_TASKS.values()]
-        self.task_combo.addItems(self._task_labels)
+        if sys.platform == 'darwin':
+            from utils.macos_capabilities import unsupported_reason
+            choices = [label + ('（macOS 不支持）' if unsupported_reason(key) else '')
+                       for key, label in zip(self._task_keys, self._task_labels)]
+        else:
+            choices = self._task_labels
+        self.task_combo.addItems(choices)
         task_id = card_data.get("task_id", "")
         if task_id in self._task_keys:
             self.task_combo.setCurrentIndex(self._task_keys.index(task_id))

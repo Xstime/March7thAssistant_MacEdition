@@ -34,7 +34,8 @@ def is_docker_started():
 
 def should_skip_pause():
     """检查是否应该跳过暂停（GUI或Docker启动时跳过）"""
-    return is_gui_started() or is_docker_started()
+    return (is_gui_started() or is_docker_started() or
+            (sys.platform == 'darwin' and getattr(sys, 'frozen', False)))
 
 
 def pause_on_error():

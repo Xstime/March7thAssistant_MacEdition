@@ -5,14 +5,16 @@ import time
 
 class Achievement(RewardTemplate):
     def run(self):
-        auto.click_element(
+        if not auto.click_element(
             './assets/images/zh_CN/reward/achievement/one_key_receive.png', 'image', 0.8
-        )
+        ):
+            return False
         time.sleep(3.0)
-        auto.click_element(
+        if not auto.click_element(
             './assets/images/zh_CN/base/confirm.png', 'image', 0.9, max_retries=10
-        )
+        ):
+            return False
         time.sleep(0.5)
-        auto.click_element(
+        return bool(auto.click_element(
             './assets/images/zh_CN/base/click_close.png', 'image', 0.8, max_retries=10
-        )
+        ))

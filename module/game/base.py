@@ -1,5 +1,6 @@
 from abc import abstractmethod
 import os
+import sys
 import time
 import subprocess
 import ctypes
@@ -112,6 +113,10 @@ class GameControllerBase:
         self.stop_game()
         if action not in ["Shutdown", "Sleep", "Hibernate", "Restart", "Logoff", "TurnOffDisplay", "RunScript"]:
             return True
+
+        if sys.platform == "darwin":
+            self.log_warning(f"完成后操作 {action} 当前不支持 macOS，已跳过")
+            return False
 
         self.log_warning(f"将在{delay}秒后开始执行系统操作：{action}")
         time.sleep(delay)  # 暂停指定的秒数

@@ -32,17 +32,31 @@ from module.logger import Logger
 # from utils.encryption import wdp_encrypt, wdp_decrypt
 
 from utils.console import is_docker_started
+from utils.runtime_paths import data_dir, log_dir
+from utils.task_progress import set_phase
+from utils.login_state import set_login_state
+
+
+def _cloud_error_detail(error):
+    # Selenium errors may embed page URLs, DOM text or authentication data.
+    return type(error).__name__ if sys.platform == "darwin" else str(error)
 
 
 class CloudGameLoginTimeoutError(RuntimeError):
     """云游戏登录等待超时，不应按启动失败重试。"""
 
 
+class HeadlessBrowserStartError(RuntimeError):
+    """A native headless browser session could not be created."""
+
+
 class CloudGameController(GameControllerBase):
-    COOKIE_PATH = "settings/cookies.enc"          # Cookies 保存地址（仅用于调试）
+    COOKIE_PATH = os.path.join(data_dir(), "settings", "cookies.enc")
     GAME_URL = "https://sr.mihoyo.com/cloud"            # 游戏地址
     BROWSER_TAG = "--march-7th-assistant-sr-cloud-game"  # 自定义浏览器参数作为标识，用于识别哪些浏览器进程属于三月七小助手
-    BROWSER_INSTALL_PATH = os.path.join(os.getcwd(), "3rdparty", "WebBrowser")  # 浏览器安装路径
+    BROWSER_INSTALL_PATH = (os.path.join(data_dir(), "WebBrowser")
+                            if sys.platform == "darwin" else
+                            os.path.join(os.getcwd(), "3rdparty", "WebBrowser"))
     INTEGRATED_BROWSER_VERSION = "140.0.7339.207"      # 浏览器版本
     DISABLE_POINTER_LOCK_SCRIPT = """
         (() => {
@@ -139,6 +153,7 @@ class CloudGameController(GameControllerBase):
         self.logger = logger
 
         self._last_interruption_check_time = 0.0
+        self._preview_worker = None
 
         # 二维码登录通知限流（避免夜间定时任务反复刷屏）
         self._qr_notify_sent_count = 0
@@ -177,12 +192,31 @@ class CloudGameController(GameControllerBase):
         """
         设置网页分辨率大小
         """
-        self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+        metrics = {
             "width": 1920,
             "height": 1080,
             "deviceScaleFactor": 1,
             "mobile": False
-        })
+        }
+        self._viewport_scale = 1.0
+        if sys.platform == 'darwin' and not getattr(self, '_actual_headless', False):
+            # Keep the game's logical 1920x1080 canvas while fitting its visible
+            # presentation into the physical screen. CDP mouse input must use
+            # the same presentation scale (see execute_cdp_cmd below).
+            screen = self.driver.execute_script(
+                'return {width: screen.availWidth, height: screen.availHeight, '
+                'left: screen.availLeft || 0, top: screen.availTop || 0}'
+            )
+            width = min(1920, max(320, int(screen['width']) - 40))
+            height = min(1120, max(240, int(screen['height']) - 40))
+            scale = min(1.0, width / 1920, max(1, height - 80) / 1080)
+            self._viewport_scale = scale
+            metrics['scale'] = scale
+            if not self.cfg.cloud_game_fullscreen_enable:
+                self.driver.set_window_size(int(1920 * scale), int(1080 * scale) + 80)
+                self.driver.set_window_position(int(screen.get('left', 0)) + 20,
+                                                int(screen.get('top', 0)) + 20)
+        self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", metrics)
 
     def _configure_pointer_lock(self, headless: bool) -> None:
         """无窗口运行时禁止网页锁定系统鼠标指针。"""
@@ -196,9 +230,11 @@ class CloudGameController(GameControllerBase):
             })
             self.log_debug("无窗口模式已禁用 Pointer Lock")
         except Exception as e:
-            self.log_warning(f"无窗口模式禁用 Pointer Lock 失败: {e}")
+            self.log_warning(f"无窗口模式禁用 Pointer Lock 失败: {_cloud_error_detail(e)}")
 
     def _prepare_browser_and_driver(self, browser_type: str, integrated: bool) -> tuple[str, str]:
+        if sys.platform == "darwin":
+            os.makedirs(self.BROWSER_INSTALL_PATH, mode=0o700, exist_ok=True)
         self.user_profile_path = os.path.join(self.BROWSER_INSTALL_PATH, "UserProfile", self.cfg.browser_type.capitalize())
         # 判断环境变量 MARCH7TH_BROWSER_PATH 和 MARCH7TH_DRIVER_PATH，同时存在时优先使用
         env_browser_path = os.environ.get("MARCH7TH_BROWSER_PATH")
@@ -207,6 +243,9 @@ class CloudGameController(GameControllerBase):
             self.log_debug("检测到环境变量 MARCH7TH_BROWSER_PATH 和 MARCH7TH_DRIVER_PATH，优先使用指定路径")
             self.log_debug(f"browser_path = {env_browser_path}")
             self.log_debug(f"driver_path = {env_driver_path}")
+            if sys.platform == "darwin":
+                from utils.macos_browser import validate_browser_pair
+                validate_browser_pair(env_browser_path, env_driver_path)
             return env_browser_path, env_driver_path
 
         # 输出平台信息
@@ -224,8 +263,11 @@ class CloudGameController(GameControllerBase):
                         "--skip-driver-in-path",
                         "--skip-browser-in-path"]
                 if self.cfg.browser_download_use_mirror:
-                    self.log_info(f"正在使用镜像源，浏览器镜像源：{self.cfg.browser_mirror_urls['chrome']}，"
-                                  f"驱动镜像源：{self.cfg.browser_mirror_urls['chromedriver']}")
+                    if sys.platform == "darwin":
+                        self.log_info("正在使用配置的浏览器和驱动镜像源")
+                    else:
+                        self.log_info(f"正在使用镜像源，浏览器镜像源：{self.cfg.browser_mirror_urls['chrome']}，"
+                                      f"驱动镜像源：{self.cfg.browser_mirror_urls['chromedriver']}")
                     args.extend([
                         "--browser-mirror-url", self.cfg.browser_mirror_urls["chrome"],
                         "--driver-mirror-url", self.cfg.browser_mirror_urls["chromedriver"],
@@ -258,6 +300,9 @@ class CloudGameController(GameControllerBase):
             driver_path = result["driver_path"]
         self.log_debug(f"browser_path = {browser_path}")
         self.log_debug(f"driver_path = {driver_path}")
+        if sys.platform == "darwin":
+            from utils.macos_browser import validate_browser_pair
+            validate_browser_pair(browser_path, driver_path)
         return browser_path, driver_path
 
     @staticmethod
@@ -317,10 +362,11 @@ class CloudGameController(GameControllerBase):
             "--disable-infobars",   # 去掉提示 "Chrome测试版仅适用于自动测试。" 和 "浏览器正由自动测试软件控制。"
             "--lang=zh-CN",     # 浏览器语言中文
             "--log-level=3",    # 浏览器日志等级为error
-            f"--force-device-scale-factor={float(self.cfg.browser_scale_factor)}",  # 设置缩放
             f"--app={self.GAME_URL}",   # 以应用模式启动
             "--disable-blink-features=AutomationControlled",  # 去除自动化痕迹，防止被人机验证
         ]
+        if sys.platform != 'darwin':
+            args.append(f"--force-device-scale-factor={float(self.cfg.browser_scale_factor)}")
         if not headless:
             args += [
                 "--disable-backgrounding-occluded-windows",
@@ -340,15 +386,34 @@ class CloudGameController(GameControllerBase):
 
         if self.cfg.cloud_game_fullscreen_enable and not headless:
             args.append("--start-fullscreen")  # 全屏启动
-        args.extend(self.cfg.browser_launch_argument)  # 用户自定义参数
+        custom_args = self.cfg.browser_launch_argument
+        if sys.platform == "darwin":
+            forbidden = ('--no-sandbox', '--disable-web-security', '--remote-debugging-address', '--remote-debugging-port',
+                         '--force-device-scale-factor', '--high-dpi-support',
+                         '--remote-allow-origins', '--user-data-dir', '--profile-directory')
+            if any(str(argument).split('=', 1)[0] in forbidden for argument in custom_args):
+                raise ValueError("浏览器自定义参数包含不允许的安全或远程调试选项")
+            args.append('--remote-debugging-address=127.0.0.1')
+        args.extend(custom_args)  # 用户自定义参数
         return args
 
-    def _connect_or_create_browser(self, headless=False) -> None:
+    def _connect_or_create_browser(self, headless=False, existing_only=False) -> None:
         """尝试连接到现有的（由小助手启动的）浏览器，如果没有，那就创建一个"""
         browser_type = "chrome" if self.cfg.browser_type in ["integrated", "chrome"] else "edge" if self.cfg.browser_type == "edge" else "chromium"
         integrated = self.cfg.browser_type == "integrated"
         first_run = False
         browser_path, driver_path = self._prepare_browser_and_driver(browser_type, integrated)
+        self.browser_path = browser_path
+
+        if existing_only:
+            # A takeover must attach to an existing owned browser. Do not close
+            # the other mode or silently start a fresh, unrelated session.
+            if not self.get_m7a_browsers(headless=headless):
+                if self.get_m7a_browsers(headless=not headless):
+                    headless = not headless
+                else:
+                    raise RuntimeError("没有可接管的小助手云游戏浏览器，请先打开游戏")
+        self._actual_headless = bool(headless)
 
         # 端口可用性检测：若配置端口被占，递增找一个空闲端口
         try:
@@ -358,7 +423,7 @@ class CloudGameController(GameControllerBase):
         if not 1 <= configured_port <= 65535:
             raise RuntimeError(f"browser_debug_port 超出有效范围: {configured_port}")
         actual_port = configured_port
-        bind_error = self._get_port_bind_error(configured_port)
+        bind_error = None if existing_only else self._get_port_bind_error(configured_port)
         if bind_error is not None:
             self.log_warning(
                 f"端口 {configured_port} 无法绑定（{bind_error}），正在查找可用端口..."
@@ -381,6 +446,10 @@ class CloudGameController(GameControllerBase):
             options = ChromiumOptions()
             service = ChromiumService(executable_path=driver_path, log_path=os.devnull)
             webdriver_type = webdriver.Chrome
+        if sys.platform == "darwin":
+            # Only the local WebDriver control channel bypasses proxy settings;
+            # the browser's own network settings are left untouched.
+            options.ignore_local_proxy_environment_variables()
         # 记录 driver 可执行路径和 service，以便后续清理 chromedriver 进程
         self.driver_path = driver_path
         self._webdriver_service = service
@@ -391,19 +460,26 @@ class CloudGameController(GameControllerBase):
             self._driver_pid = None
 
         # 关掉 headless 不匹配的浏览器，防止端口冲突
-        if self.close_all_m7a_browser(headless=not headless):
+        if not existing_only and self.close_all_m7a_browser(headless=not headless):
             self.log_info(f"已关闭正在运行的{'前台' if headless else '后台'}浏览器")
         existing = self.get_m7a_browsers(headless=headless)
         if existing:
             # 从进程命令行解析真实调试端口（首次启动可能已回退到其它端口）
-            reconnect_port = self._get_debug_port_from_cmdline(existing[0]) or configured_port
+            reconnect_port = self._get_debug_port_from_cmdline(existing[0])
+            if existing_only and not reconnect_port:
+                raise RuntimeError("无法确认已有浏览器的调试端口，已取消接管")
+            reconnect_port = reconnect_port or configured_port
             try:
                 options.debugger_address = f"127.0.0.1:{reconnect_port}"
                 self.driver = webdriver_type(service=service, options=options)
                 self._configure_pointer_lock(headless)
+                self._start_preview_worker(reconnect_port)
                 self.log_info("已连接到现有浏览器")
                 return
-            except Exception:
+            except Exception as exc:
+                if existing_only:
+                    self._detach_existing_driver()
+                    raise ConnectionError("连接已有云游戏浏览器失败") from exc
                 self.log_info("连接现有浏览器失败")
                 self.close_all_m7a_browser()
                 # 重连失败后重建 options，避免 debugger_address 残留导致 Selenium 尝试重连而非启动新浏览器
@@ -413,17 +489,28 @@ class CloudGameController(GameControllerBase):
                     options = EdgeOptions()
                 else:
                     options = ChromiumOptions()
+                if sys.platform == "darwin":
+                    options.ignore_local_proxy_environment_variables()
 
+        if existing_only:
+            raise RuntimeError("已有云游戏浏览器已退出，无法接管")
         self.log_info(f"正在启动 {browser_type} 浏览器")
         options.binary_location = browser_path
         options.add_experimental_option("prefs", self.PERFERENCES)  # 允许云游戏权限权限
+        if sys.platform == "darwin":
+            # The GUI may hand this owned browser to a task process. Explicit
+            # cleanup still closes it when a run finishes or the app exits.
+            options.add_experimental_option("detach", True)
 
-        self.log_debug(f"启动参数： {self._get_browser_arguments(headless=headless)}")
+        if sys.platform == "darwin":
+            self.log_debug(f"启动浏览器，无头模式: {bool(headless)}")
+        else:
+            self.log_debug(f"启动参数： {self._get_browser_arguments(headless=headless)}")
         # 设置浏览器启动参数
         for arg in self._get_browser_arguments(headless=headless):
             options.add_argument(arg)
         options.add_argument(f"--remote-debugging-port={actual_port}")
-        if integrated or is_docker_started():  # 修复 Windows 部分情况下启动 Chrome 报错
+        if (integrated and sys.platform == "win32") or is_docker_started():
             options.add_argument("--no-sandbox")
 
         # 清理失效的断链 (Broken Symlinks) 防止浏览器无法启动
@@ -437,14 +524,15 @@ class CloudGameController(GameControllerBase):
                         os.remove(file_path)
                         self.log_debug(f"已清理断开的软链接: {file_path}")
                 except Exception as e:
-                    self.log_warning(f"处理残留链接失败: {file_path}, 错误: {e}")
+                    self.log_warning(f"处理残留链接失败: {file_path}, 错误: {_cloud_error_detail(e)}")
 
         try:
             self.log_debug("启动浏览器中...")
             self.driver = webdriver_type(service=service, options=options)
+            self._driver_pid = self.driver.service.process.pid
             self.log_debug("浏览器启动成功")
         except SessionNotCreatedException as e:
-            self.log_error(f"浏览器启动失败: {e}")
+            self.log_error(f"浏览器启动失败: {_cloud_error_detail(e)}")
             # 清理残留文件，防止浏览器无法启动
             if is_docker_started():
                 singleton_files = ["SingletonCookie", "SingletonLock", "SingletonSocket"]
@@ -455,12 +543,14 @@ class CloudGameController(GameControllerBase):
                             os.remove(file_path)
                             self.log_debug(f"已删除残留文件: {file_path}")
                     except Exception as e:
-                        self.log_warning(f"删除残留文件失败: {file_path}, 错误: {e}")
+                        self.log_warning(f"删除残留文件失败: {file_path}, 错误: {_cloud_error_detail(e)}")
             self.log_error("如果设置了浏览器启动参数，请去掉所有浏览器启动参数后重试")
             self.log_error("如果仍然存在问题，请更换浏览器重试")
+            if sys.platform == "darwin" and headless:
+                raise HeadlessBrowserStartError("无头浏览器启动失败") from e
             raise RuntimeError("浏览器启动失败")
         except Exception as e:
-            self.log_error(f"浏览器启动失败: {e}")
+            self.log_error(f"浏览器启动失败: {_cloud_error_detail(e)}")
             raise RuntimeError("浏览器启动失败")
 
         self._configure_pointer_lock(headless)
@@ -473,6 +563,25 @@ class CloudGameController(GameControllerBase):
         if self.cfg.browser_dump_cookies_enable:
             self._load_cookies()
         self._refresh_page()
+        self._start_preview_worker(actual_port)
+
+    def _start_preview_worker(self, port):
+        if sys.platform != 'darwin':
+            return
+        try:
+            from utils.cdp_preview import PreviewWorker
+            self._stop_preview_worker()
+            self._preview_worker = PreviewWorker(port, self.driver.current_window_handle,
+                                                 on_error=self.log_debug)
+            self._preview_worker.start()
+        except Exception as exc:
+            self.log_warning(f"无法启动画面预览: {type(exc).__name__}")
+
+    def _stop_preview_worker(self):
+        worker = getattr(self, '_preview_worker', None)
+        self._preview_worker = None
+        if worker:
+            worker.stop()
 
     def _restart_browser(self, headless=False) -> None:
         """重启浏览器"""
@@ -509,11 +618,14 @@ class CloudGameController(GameControllerBase):
             self.log_info("加载初始配置成功")
             return True
         except Exception as e:
-            self.log_error(f"加载初始配置失败 {e}")
+            self.log_error(f"加载初始配置失败 {_cloud_error_detail(e)}")
             return False
 
     def _save_cookies(self) -> bool:
         """保存 Cookies （Debug only）"""
+        if sys.platform == "darwin":
+            self.log_warning("macOS 使用浏览器用户资料保存登录状态，不导出明文 Cookie")
+            return False
         if not self.driver:
             return
         try:
@@ -523,10 +635,12 @@ class CloudGameController(GameControllerBase):
                 f.write(cookies_json.encode())
             self.log_info("登录信息保存成功。")
         except Exception as e:
-            self.log_error(f"保存 cookies 失败: {e}")
+            self.log_error(f"保存 cookies 失败: {_cloud_error_detail(e)}")
 
     def _load_cookies(self) -> bool:
         """加载 Cookies （Debug only）"""
+        if sys.platform == "darwin":
+            return False
         if not self.driver:
             return False
         try:
@@ -547,7 +661,7 @@ class CloudGameController(GameControllerBase):
             self.log_info("cookies 文件不存在。")
             return False
         except Exception as e:
-            self.log_error(f"加载 cookies 失败: {e}")
+            self.log_error(f"加载 cookies 失败: {_cloud_error_detail(e)}")
             return False
 
     def _refresh_page(self) -> None:
@@ -576,7 +690,7 @@ class CloudGameController(GameControllerBase):
             self.log_debug("获取剩余时长失败: 页面元素已更新，将重试")
             return None, None
         except Exception as e:
-            self.log_debug(f"获取剩余时长失败: {e}")
+            self.log_debug(f"获取剩余时长失败: {_cloud_error_detail(e)}")
             return None, None
 
     def _check_login(self, timeout=5) -> bool:
@@ -591,10 +705,10 @@ class CloudGameController(GameControllerBase):
             state = WebDriverWait(self.driver, timeout).until(
                 lambda d: (
                     "logged_in"
-                    if d.find_elements(By.CSS_SELECTOR, logged_in_selector)
+                    if any(item.is_displayed() for item in d.find_elements(By.CSS_SELECTOR, logged_in_selector))
                     else (
                         "not_logged_in"
-                        if d.find_elements(By.ID, not_logged_in_id)
+                        if any(item.is_displayed() for item in d.find_elements(By.ID, not_logged_in_id))
                         else None
                     )
                 )
@@ -621,6 +735,7 @@ class CloudGameController(GameControllerBase):
 
     def _check_login_timeout(self, deadline: float, timeout_seconds: int) -> None:
         if time.monotonic() >= deadline:
+            set_login_state('timed_out')
             self._abort_login_timeout(timeout_seconds)
 
     def _click_enter_game(self, timeout=5) -> None:
@@ -646,7 +761,7 @@ class CloudGameController(GameControllerBase):
             )
             self.driver.execute_script("arguments[0].click();", enter_button)
         except Exception as e:
-            self.log_error(f"点击进入游戏按钮游戏异常: {e}")
+            self.log_error(f"点击进入游戏按钮游戏异常: {_cloud_error_detail(e)}")
             raise e
 
     def _wait_game_canvas_ready(self, timeout=30) -> bool:
@@ -719,10 +834,12 @@ class CloudGameController(GameControllerBase):
                 )
 
             if status == "game_running":
+                set_phase('loading', '等待游戏画面')
                 self.log_info("游戏已启动，无需排队，等待游戏画面加载...")
                 self._wait_game_canvas_ready()
                 return True
             elif status == "in_queue":
+                set_phase('queue', '等待云游戏队列')
                 self.log_info("正在排队...")
                 last_wait_time = None
                 poll_interval = 5  # 每5秒检测一次
@@ -730,6 +847,7 @@ class CloudGameController(GameControllerBase):
                 while time.monotonic() - start_time < timeout:
                     # 检查是否已退出排队
                     if not self.driver.find_elements(By.CSS_SELECTOR, in_queue_selector):
+                        set_phase('loading', '等待游戏画面')
                         self.log_info("排队成功，等待游戏画面加载...")
                         self._wait_game_canvas_ready()
                         return True
@@ -759,7 +877,7 @@ class CloudGameController(GameControllerBase):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.log_error(f"等待排队异常: {e}")
+            self.log_error(f"等待排队异常: {_cloud_error_detail(e)}")
             return False
 
     def _check_time_insufficient_dialog(self) -> bool:
@@ -800,6 +918,13 @@ class CloudGameController(GameControllerBase):
 
     def _clean_at_exit(self) -> None:
         """当脚本退出时，关闭所有 headless 浏览器"""
+        if sys.platform == "darwin":
+            if self.driver is not None:
+                try:
+                    self.stop_game()
+                except Exception as exc:
+                    self.log_warning(f"退出时清理云游戏失败: {_cloud_error_detail(exc)}")
+            return
         if self.close_all_m7a_browser(headless=True):
             self.log_info("已关闭所有后台浏览器")
 
@@ -826,11 +951,11 @@ class CloudGameController(GameControllerBase):
             if hasattr(self, path_attr):
                 p = getattr(self, path_attr)
                 if p:
-                    browser_names.add(os.path.basename(p))
+                    browser_names.add(os.path.basename(p).lower())
 
         env_path = os.environ.get('MARCH7TH_BROWSER_PATH')
         if env_path:
-            browser_names.add(os.path.basename(env_path))
+            browser_names.add(os.path.basename(env_path).lower())
 
         for proc in psutil.process_iter(['pid', 'name']):
             name = proc.info.get('name')
@@ -844,6 +969,13 @@ class CloudGameController(GameControllerBase):
 
             if browser_tag not in cmdline:
                 continue
+
+            # Other installations may use the same upstream tag. Only manage
+            # a browser belonging to this application's configured profile.
+            if sys.platform == "darwin":
+                profile = getattr(self, "user_profile_path", None)
+                if not profile or f"--user-data-dir={profile}" not in cmdline:
+                    continue
 
             if headless is not None:
                 is_headless = "--headless=new" in cmdline
@@ -862,17 +994,36 @@ class CloudGameController(GameControllerBase):
         return 被关闭浏览器的 Process
         """
         closed_proc = []
+        failures = []
         for proc in self.get_m7a_browsers(headless=headless) or []:
             try:
                 proc.terminate()
                 closed_proc.append(proc)
-            except Exception:
-                pass
+            except psutil.NoSuchProcess:
+                continue
+            except Exception as exc:
+                if sys.platform == "darwin":
+                    failures.append(type(exc).__name__)
 
         # 也尝试关闭与当前 driver_path 对应的 chromedriver 进程
         closed = self._terminate_chromedriver_processes()
         if closed:
             closed_proc.extend(closed)
+        if sys.platform == "darwin" and closed_proc:
+            # Wait for the owned profile to be released before a restart. A
+            # hung owned process must not silently leave the next run blocked.
+            _, alive = psutil.wait_procs(closed_proc, timeout=3)
+            for proc in alive:
+                try:
+                    proc.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            if alive:
+                _, alive = psutil.wait_procs(alive, timeout=2)
+            if alive:
+                raise RuntimeError("小助手浏览器或驱动进程未能退出")
+        if failures:
+            raise RuntimeError(f"无法关闭小助手浏览器进程: {', '.join(failures)}")
         return closed_proc
 
     def _terminate_chromedriver_processes(self) -> list[psutil.Process]:
@@ -883,9 +1034,10 @@ class CloudGameController(GameControllerBase):
         if hasattr(self, '_driver_pid') and self._driver_pid:
             try:
                 p = psutil.Process(self._driver_pid)
-                p.terminate()
-                closed.append(p)
-                return closed
+                if sys.platform != "darwin" or p.ppid() == os.getpid():
+                    p.terminate()
+                    closed.append(p)
+                    return closed
             except psutil.NoSuchProcess:
                 pass
 
@@ -910,7 +1062,7 @@ class CloudGameController(GameControllerBase):
             for proc in chromedrivers:
                 try:
                     # 优先通过 exe 路径精确匹配
-                    if driver_path_norm:
+                    if driver_path_norm and sys.platform != "darwin":
                         try:
                             exe_path = proc.exe()
                         except psutil.Error:
@@ -933,11 +1085,15 @@ class CloudGameController(GameControllerBase):
                 except psutil.Error:
                     continue
         except psutil.Error as e:
-            self.log_error(f"清理 chromedriver 进程时发生 psutil 错误：{e}")
+            self.log_error(f"清理 chromedriver 进程时发生 psutil 错误：{_cloud_error_detail(e)}")
 
         return closed
 
-    def try_dump_page(self, dump_dir="logs/webdump") -> None:
+    def try_dump_page(self, dump_dir=None) -> None:
+        if sys.platform == "darwin":
+            self.log_warning("为保护登录资料，macOS 不导出网页内容")
+            return
+        dump_dir = dump_dir or os.path.join(log_dir(), "webdump")
         if self.driver:
             os.makedirs(dump_dir, exist_ok=True)
             from datetime import datetime
@@ -963,10 +1119,13 @@ class CloudGameController(GameControllerBase):
             EC.element_to_be_clickable((By.CSS_SELECTOR, "div.qr-login-btn"))
         )
         try:
-            qr_login_button.click()
+            if sys.platform == 'darwin' and getattr(self, '_viewport_scale', 1.0) != 1.0:
+                self.driver.execute_script('arguments[0].click()', qr_login_button)
+            else:
+                qr_login_button.click()
             time.sleep(0.5)
         except Exception as click_err:
-            self.log_warning(f"点击二维码登录按钮失败: {click_err}")
+            self.log_warning(f"点击二维码登录按钮失败: {_cloud_error_detail(click_err)}")
 
     def _wait_and_get_qr_img(self):
         self.log_debug("等待二维码加载...")
@@ -979,6 +1138,15 @@ class CloudGameController(GameControllerBase):
 
     def _save_qr_from_src(self, qr_img, qr_filename) -> None:
         """从元素的 src 保存二维码图片（支持 data URI 与 HTTP URL）。"""
+        if sys.platform == "darwin":
+            # Capture locally through the existing browser session; never forward the
+            # login URL or image to a notification or QR generation service.
+            data = qr_img.screenshot_as_png
+            fd = os.open(qr_filename, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.chmod(qr_filename, 0o600)
+            return
         try:
             qr_src = qr_img.get_attribute("src")
             # data URI 形式
@@ -1000,17 +1168,17 @@ class CloudGameController(GameControllerBase):
             # 其他情况回退为元素截图
             qr_img.screenshot(qr_filename)
         except Exception as e:
-            self.log_warning(f"保存二维码失败，尝试截图保存: {e}")
+            self.log_warning(f"保存二维码失败，尝试截图保存: {_cloud_error_detail(e)}")
             try:
                 qr_img.screenshot(qr_filename)
             except Exception as err:
-                self.log_error(f"保存二维码失败: {err}")
+                self.log_error(f"保存二维码失败: {_cloud_error_detail(err)}")
                 raise
 
     def _save_qr_img(self, qr_img) -> str:
         import os
         # 将二维码保存到 logs 目录，方便 Docker 挂载访问
-        logs_dir = "logs"
+        logs_dir = log_dir()
         os.makedirs(logs_dir, exist_ok=True)
         qr_filename = os.path.join(logs_dir, "qrcode_login.png")
         self._save_qr_from_src(qr_img, qr_filename)
@@ -1059,6 +1227,10 @@ class CloudGameController(GameControllerBase):
         return True
 
     def _decode_qr_from_element(self, qr_img, qr_filename: str) -> None:
+        if sys.platform == "darwin":
+            # The image is displayed locally; its contents are credentials and
+            # must not be logged or sent through configured notification channels.
+            return
         try:
             import base64
             import numpy as np
@@ -1106,12 +1278,12 @@ class CloudGameController(GameControllerBase):
                 try:
                     self._send_qr_notification(img_bytes, data)
                 except Exception as e:
-                    self.log_warning(f"发送二维码登录通知失败: {e}")
+                    self.log_warning(f"发送二维码登录通知失败: {_cloud_error_detail(e)}")
             else:
                 self.log_debug("未能解析二维码内容。")
 
         except Exception as e:
-            self.log_warning(f"解析二维码内容失败: {e}")
+            self.log_warning(f"解析二维码内容失败: {_cloud_error_detail(e)}")
 
     def _wait_scan_success_with_refresh(self, qr_filename: str, login_deadline: float = None, timeout_seconds: int = None) -> None:
         import os
@@ -1121,7 +1293,9 @@ class CloudGameController(GameControllerBase):
                 self._check_login_timeout(login_deadline, timeout_seconds)
 
             # 成功
-            if self.driver.find_elements(By.XPATH, "//*[contains(text(), '扫码成功')]"):
+            scanned = self.driver.find_elements(By.XPATH, "//*[contains(text(), '扫码成功')]")
+            if any(element.is_displayed() for element in scanned):
+                set_login_state('waiting_confirm')
                 try:
                     if os.path.exists(qr_filename):
                         os.remove(qr_filename)
@@ -1134,10 +1308,14 @@ class CloudGameController(GameControllerBase):
             # 过期刷新
             expired_elements = self.driver.find_elements(By.CSS_SELECTOR, "div.qr-expired")
             if expired_elements and expired_elements[0].is_displayed():
+                set_login_state('waiting_qr')
                 self.log_warning("二维码已过期，正在刷新...")
                 try:
                     qr_wrap = self.driver.find_element(By.CSS_SELECTOR, "div.qr-wrap")
-                    qr_wrap.click()
+                    if sys.platform == 'darwin' and getattr(self, '_viewport_scale', 1.0) != 1.0:
+                        self.driver.execute_script('arguments[0].click()', qr_wrap)
+                    else:
+                        qr_wrap.click()
                     time.sleep(1)
 
                     WebDriverWait(self.driver, 10).until(
@@ -1148,6 +1326,7 @@ class CloudGameController(GameControllerBase):
                     try:
                         qr_img = self.driver.find_element(By.CSS_SELECTOR, "img.qr-loaded")
                         self._save_qr_from_src(qr_img, qr_filename)
+                        set_login_state('waiting_scan')
                         self.log_info("=" * 60)
                         self.log_info("请使用手机米游社 APP 扫描二维码登录")
                         self.log_info(f"二维码图片位置: {os.path.abspath(qr_filename)}")
@@ -1155,15 +1334,16 @@ class CloudGameController(GameControllerBase):
                         self.log_info("=" * 60)
                         self.log_info("等待扫码（二维码过期将自动刷新）...")
                     except Exception as refresh_err:
-                        self.log_warning(f"保存刷新后的二维码失败: {refresh_err}")
+                        self.log_warning(f"保存刷新后的二维码失败: {_cloud_error_detail(refresh_err)}")
                 except Exception as refresh_err:
-                    self.log_error(f"刷新二维码失败: {refresh_err}")
-                    break
+                    self.log_error(f"刷新二维码失败: {_cloud_error_detail(refresh_err)}")
+                    raise RuntimeError("刷新登录二维码失败") from refresh_err
 
             time.sleep(check_interval)
 
-    def _run_qr_login_flow(self, login_deadline: float = None, timeout_seconds: int = None) -> None:
+    def _run_qr_login_flow(self, login_deadline: float = None, timeout_seconds: int = None) -> bool:
         self.log_info("正在切换到二维码登录...")
+        set_login_state('waiting_qr')
 
         # 每次进入二维码登录流程时重置通知限流状态
         self._qr_notify_sent_count = 0
@@ -1176,43 +1356,96 @@ class CloudGameController(GameControllerBase):
             qr_img = self._wait_and_get_qr_img()
             try:
                 qr_filename = self._save_qr_img(qr_img)
+                set_login_state('waiting_scan')
             except Exception as save_err:
-                self.log_warning(f"保存二维码截图失败: {save_err}")
-                qr_filename = os.path.join("logs", "qrcode_login.png")
+                self.log_warning(f"保存二维码截图失败: {_cloud_error_detail(save_err)}")
+                if sys.platform == "darwin":
+                    raise RuntimeError("无法在应用中显示二维码") from save_err
+                qr_filename = os.path.join(log_dir(), "qrcode_login.png")
 
             # 初次解码
             self._decode_qr_from_element(qr_img, qr_filename)
             self.log_info("=" * 60)
             self.log_info("等待扫码（二维码过期将自动刷新）...")
             self._wait_scan_success_with_refresh(qr_filename, login_deadline, timeout_seconds)
+            return True
+        except CloudGameLoginTimeoutError:
+            raise
         except TimeoutException:
             self.log_warning("等待二维码加载超时")
+            return False
         except Exception as e:
-            import traceback
-            self.log_error(f"切换二维码登录失败: {e}")
-            self.log_error(f"详细错误:\n{traceback.format_exc()}")
-            try:
-                self.try_dump_page()
-            except Exception as dump_err:
-                self.log_warning(f"尝试导出页面失败: {dump_err}")
+            self.log_error(f"切换二维码登录失败: {_cloud_error_detail(e)}")
+            if sys.platform != "darwin":
+                import traceback
+                self.log_error(f"详细错误:\n{traceback.format_exc()}")
+                try:
+                    self.try_dump_page()
+                except Exception as dump_err:
+                    self.log_warning(f"尝试导出页面失败: {_cloud_error_detail(dump_err)}")
+            return False
         finally:
+            if sys.platform == "darwin":
+                try:
+                    os.unlink(os.path.join(log_dir(), "qrcode_login.png"))
+                except FileNotFoundError:
+                    pass
+                except OSError as err:
+                    self.log_warning(f"清理登录二维码失败: {_cloud_error_detail(err)}")
             try:
                 self.driver.switch_to.default_content()
                 self.log_info("已切换回主文档")
             except Exception as switch_err:
-                self.log_warning(f"切回主文档失败: {switch_err}")
+                self.log_warning(f"切回主文档失败: {_cloud_error_detail(switch_err)}")
 
     def start_game_process(self, headless=None) -> bool:
         """启动浏览器进程"""
         try:
+            set_phase('initializing', '启动原生浏览器')
             if headless is None:
                 headless = self.cfg.browser_headless_enable
             self._connect_or_create_browser(headless=headless)
             self._confirm_viewport_resolution()
             return True
+        except HeadlessBrowserStartError:
+            if sys.platform != "darwin" or not headless:
+                return False
+            self.log_warning("无头浏览器无法启动，正在尝试有窗口模式；本次不会修改全局设置")
+            try:
+                if not self.stop_game():
+                    raise RuntimeError("未能清理失败的浏览器")
+                self._connect_or_create_browser(headless=False)
+                self._confirm_viewport_resolution()
+                return True
+            except Exception as exc:
+                self.log_error(f"有窗口浏览器启动失败: {_cloud_error_detail(exc)}")
+                return False
         except Exception as e:
-            self.log_error(f"启动或连接浏览器失败 {e}")
+            self.log_error(f"启动或连接浏览器失败 {_cloud_error_detail(e)}")
             return False
+
+    def attach_existing_game(self) -> None:
+        """Attach to an owned cloud session for a mid-run takeover, without starting one."""
+        self._connect_or_create_browser(
+            headless=bool(self.cfg.browser_headless_enable), existing_only=True
+        )
+        if not self.is_game_running() or not self.switch_to_game():
+            self._detach_existing_driver()
+            raise RuntimeError("已有浏览器没有可接管的云游戏画面，请先进入游戏")
+        self._confirm_viewport_resolution()
+
+    def _detach_existing_driver(self) -> bool:
+        """Release our control channel without terminating the attached browser."""
+        self._stop_preview_worker()
+        driver = self.driver
+        if driver:
+            try:
+                driver.service.stop()
+            except Exception as exc:
+                self.log_warning(f"关闭浏览器控制进程失败: {type(exc).__name__}")
+                return False
+        self.driver = None
+        return True
 
     def is_in_game(self) -> bool:
         if not self.driver:
@@ -1231,40 +1464,70 @@ class CloudGameController(GameControllerBase):
 
     def enter_cloud_game(self) -> bool:
         """进入云游戏"""
+        login_confirmed = False
+        configured_headless = getattr(getattr(self, 'cfg', None), 'browser_headless_enable', False)
+        login_headless = (getattr(self, '_actual_headless', configured_headless)
+                          if sys.platform == 'darwin' else configured_headless)
         try:
             # 检测登录状态
-            while not self._check_login():
-                login_timeout_seconds = self._get_login_timeout_seconds()
-                login_deadline = time.monotonic() + login_timeout_seconds
+            set_phase('login', '检查云游戏登录')
+            set_login_state('checking')
+            login_timeout_seconds = self._get_login_timeout_seconds()
+            login_deadline = time.monotonic() + login_timeout_seconds
+            while True:
+                self._check_login_timeout(login_deadline, login_timeout_seconds)
+                login_state = self._check_login()
+                if login_state is True:
+                    break
+                if login_state is None:
+                    time.sleep(2)
+                    continue
                 self.log_info("未登录")
 
                 # 如果是 headless 且配置了自动重启，则以非 headless 模式重启启动让用户登录
-                if self.cfg.browser_headless_enable and self.cfg.browser_headless_restart_on_not_logged_in:
+                if login_headless and self.cfg.browser_headless_restart_on_not_logged_in:
                     self.log_info("无窗口模式下检测到未登录，将以有窗口模式重启浏览器")
                     self._restart_browser(headless=False)
 
                 # 如果是 headless 且配置了不重启，则尝试二维码登录
-                if self.cfg.browser_headless_enable and (not self.cfg.browser_headless_restart_on_not_logged_in):
-                    self._run_qr_login_flow(login_deadline, login_timeout_seconds)
+                if login_headless and (not self.cfg.browser_headless_restart_on_not_logged_in):
+                    for attempt in range(3):
+                        self._check_login_timeout(login_deadline, login_timeout_seconds)
+                        if self._run_qr_login_flow(login_deadline, login_timeout_seconds):
+                            break
+                        if self._check_login() is True:
+                            break
+                        if attempt < 2:
+                            self.log_warning(f"二维码暂未就绪，准备重试 ({attempt + 1}/3)")
+                            time.sleep(2 ** attempt)
+                    else:
+                        raise RuntimeError("二维码登录初始化失败，请检查网络后重试")
 
                 self.log_info(f"请在浏览器中完成登录操作，超时时间：{login_timeout_seconds // 60} 分钟")
 
                 # 循环检测用户是否登录
+                if not (login_headless and not self.cfg.browser_headless_restart_on_not_logged_in):
+                    set_login_state('verifying')
                 while True:
                     self._check_login_timeout(login_deadline, login_timeout_seconds)
-                    if self._check_login():
+                    login_state = self._check_login()
+                    if login_state is True:
                         break
+                    if login_state is None:
+                        set_login_state('verifying')
                     time.sleep(2)
 
                 self.log_info("检测到登录成功")
 
                 # 如果为 headless 模式，则重启浏览器回到 headless 模式
-                if self.cfg.browser_headless_enable and self.cfg.browser_headless_restart_on_not_logged_in:
+                if login_headless and self.cfg.browser_headless_restart_on_not_logged_in:
                     if self.cfg.browser_dump_cookies_enable:
                         self._save_cookies()
                     self.log_info("登录完成，将重启为无窗口模式")
                     self._restart_browser(headless=True)
 
+            login_confirmed = True
+            set_login_state('success')
             if self.cfg.browser_dump_cookies_enable:
                 self._save_cookies()
 
@@ -1279,6 +1542,7 @@ class CloudGameController(GameControllerBase):
 
             remaining = (paid or 0) + (free or 0)
             self._paid_time = paid or 0
+            set_phase('loading', '进入云游戏')
 
             if paid is None and free is None:
                 self.log_warning("无法识别剩余时长，将继续尝试进入游戏")
@@ -1300,10 +1564,13 @@ class CloudGameController(GameControllerBase):
                 self.log_info("进入云游戏成功")
                 return True
         except CloudGameLoginTimeoutError:
+            set_login_state('timed_out')
             raise
         except Exception as e:
+            if not login_confirmed:
+                set_login_state('failed')
             self.try_dump_page()
-            self.log_error(f"进入云游戏失败: {e}")
+            self.log_error(f"进入云游戏失败: {_cloud_error_detail(e)}")
             return False
 
         if remaining == 0:
@@ -1507,6 +1774,9 @@ class CloudGameController(GameControllerBase):
                 list(crop),
             )
         except Exception as e:
+            if sys.platform == "darwin":
+                self.log_debug(f"执行视频元素截图脚本异常: {_cloud_error_detail(e)}")
+                raise RuntimeError("视频元素截图失败") from None
             page_url = None
             page_title = None
             try:
@@ -1526,13 +1796,15 @@ class CloudGameController(GameControllerBase):
         debug_info = result.get("debug")
 
         if result.get("error"):
+            if sys.platform == "darwin":
+                raise RuntimeError("视频元素截图失败")
             if debug_info is not None:
                 try:
                     self.log_debug(
                         f"视频元素截图失败调试信息: {json.dumps(debug_info, ensure_ascii=False, default=str)}"
                     )
                 except Exception as log_err:
-                    self.log_debug(f"视频元素截图调试信息序列化失败: {log_err}; 原始调试信息: {debug_info}")
+                    self.log_debug(f"视频元素截图调试信息序列化失败: {_cloud_error_detail(log_err)}; 原始调试信息: {debug_info}")
             error_message = result["error"]
             if isinstance(debug_info, dict) and debug_info.get("stage"):
                 error_message = f"{error_message} (stage={debug_info['stage']})"
@@ -1540,13 +1812,16 @@ class CloudGameController(GameControllerBase):
 
         data_url = result.get("dataUrl")
         if not data_url or "," not in data_url:
+            if sys.platform == "darwin":
+                self.log_debug("视频元素截图返回无效图像")
+                return None
             if debug_info is not None:
                 try:
                     self.log_debug(
                         f"视频元素截图返回了无效 dataUrl，调试信息: {json.dumps(debug_info, ensure_ascii=False, default=str)}"
                     )
                 except Exception as log_err:
-                    self.log_debug(f"视频元素截图调试信息序列化失败: {log_err}; 原始调试信息: {debug_info}")
+                    self.log_debug(f"视频元素截图调试信息序列化失败: {_cloud_error_detail(log_err)}; 原始调试信息: {debug_info}")
             else:
                 self.log_debug(f"视频元素截图返回的 dataUrl 无效: keys={list(result.keys())}")
             return None
@@ -1584,7 +1859,7 @@ class CloudGameController(GameControllerBase):
                     if isinstance(error, (TransportTimeoutError, TimeoutException, TimeoutError)):
                         raise TimeoutError("云游戏浏览器截图请求超时") from exc
                     pending.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
-                self.log_debug(f"CDP 截图失败，回退 WebDriver 截图: {exc}")
+                self.log_debug(f"CDP 截图失败，回退 WebDriver 截图: {_cloud_error_detail(exc)}")
             return self.driver.get_screenshot_as_png()
         finally:
             client_config.timeout = previous_timeout
@@ -1606,7 +1881,7 @@ class CloudGameController(GameControllerBase):
                 user32.ShowWindow(hwnd, SW_RESTORE)
                 time.sleep(0.1)
         except Exception as e:
-            self.log_debug(f"恢复云游戏窗口失败，继续尝试截图: {e}")
+            self.log_debug(f"恢复云游戏窗口失败，继续尝试截图: {_cloud_error_detail(e)}")
 
     def take_screenshot(self, crop=(0, 0, 1, 1), prefer_frame=True) -> bytes | tuple[bytes, tuple[int, int]] | None:
         """浏览器内截图"""
@@ -1616,7 +1891,11 @@ class CloudGameController(GameControllerBase):
         if self.cfg.cloud_game_use_paid_time:
             self.check_cloud_game_interruptions()
 
-        return self._take_browser_screenshot()
+        frame = self._take_browser_screenshot()
+        if sys.platform == "darwin" and frame:
+            from utils.runtime_diagnostics import record_event
+            record_event('capture')
+        return frame
 
         # 帧截图有内存占用问题，暂不使用
         if prefer_frame:
@@ -1628,11 +1907,18 @@ class CloudGameController(GameControllerBase):
                 else:
                     self.log_debug("游戏画面元素截图失败，回退到浏览器截图")
             except Exception as e:
-                self.log_debug(f"游戏画面元素截图失败，回退浏览器截图: {e}")
+                self.log_debug(f"游戏画面元素截图失败，回退浏览器截图: {_cloud_error_detail(e)}")
 
         return self._take_browser_screenshot()
 
     def execute_cdp_cmd(self, cmd: str, cmd_args: dict):
+        if cmd == 'Input.dispatchMouseEvent' and sys.platform == 'darwin':
+            scale = getattr(self, '_viewport_scale', 1.0)
+            if scale != 1.0:
+                cmd_args = dict(cmd_args)
+                for key in ('x', 'y'):
+                    if key in cmd_args:
+                        cmd_args[key] *= scale
         return self.driver.execute_cdp_cmd(cmd, cmd_args)
 
     def get_window_handle(self) -> int:
@@ -1642,7 +1928,20 @@ class CloudGameController(GameControllerBase):
         import win32gui
         return win32gui.FindWindow(None, "云·星穹铁道")
 
+    def is_game_running(self) -> bool:
+        if sys.platform == "darwin":
+            try:
+                return bool(self.driver and self.is_in_game())
+            except Exception as exc:
+                self.log_warning(f"无法确认云游戏会话状态: {_cloud_error_detail(exc)}")
+                return False
+        return super().is_game_running()
+
     def switch_to_game(self) -> bool:
+        if sys.platform == "darwin":
+            # CDP sends input to the owned browser session without foregrounding
+            # an unrelated macOS window. A live game player is still required.
+            return self.is_game_running()
         if self.cfg.browser_headless_enable:
             self.log_warning("游戏切换至前台失败：当前为无窗口模式")
             return False
@@ -1754,32 +2053,58 @@ class CloudGameController(GameControllerBase):
 
     def stop_game(self) -> bool:
         """退出游戏，关闭浏览器"""
+        if sys.platform == "darwin":
+            self._stop_preview_worker()
+            try:
+                from utils.preview_exchange import clear_preview
+                clear_preview()
+            except OSError as exc:
+                self.log_debug(f"画面预览清理失败: {_cloud_error_detail(exc)}")
         # 删除可能残留的二维码图片
         try:
-            qr_filename = os.path.join("logs", "qrcode_login.png")
+            qr_filename = os.path.join(log_dir(), "qrcode_login.png")
             if os.path.exists(qr_filename):
                 os.remove(qr_filename)
                 self.log_debug(f"已删除残留的二维码图片: {os.path.abspath(qr_filename)}")
         except Exception as e:
-            self.log_debug(f"删除二维码图片失败（可忽略）: {e}")
+            self.log_debug(f"删除二维码图片失败（可忽略）: {_cloud_error_detail(e)}")
 
         if self.driver:
             driver = self.driver
-            client_config = driver.command_executor._client_config
-            previous_timeout = client_config.timeout
-            client_config.timeout = min(previous_timeout, 15) if previous_timeout is not None else 15
+            client_config = None
+            previous_timeout = None
+            can_use_driver = False
             try:
                 try:
-                    driver.execute(Command.CLOSE)
-                    self.log_info("关闭浏览器成功")
+                    client_config = getattr(getattr(driver, 'command_executor', None), '_client_config', None)
+                    if client_config is not None:
+                        previous_timeout = client_config.timeout
+                        client_config.timeout = min(previous_timeout, 15) if previous_timeout is not None else 15
+                        can_use_driver = True
                 except Exception as exc:
-                    self.log_debug(f"关闭浏览器窗口失败，将清理进程: {exc}")
-                try:
-                    driver.quit()
-                except Exception as exc:
-                    self.log_debug(f"退出浏览器会话失败，将清理进程: {exc}")
+                    self.log_debug(f"无法设置浏览器关闭超时，将直接清理进程: {type(exc).__name__}")
+                if can_use_driver:
+                    try:
+                        driver.execute(Command.CLOSE)
+                        self.log_info("关闭浏览器成功")
+                    except Exception as exc:
+                        self.log_debug(f"关闭浏览器窗口失败，将清理进程: {type(exc).__name__}")
+                    try:
+                        driver.quit()
+                    except Exception as exc:
+                        self.log_debug(f"退出浏览器会话失败，将清理进程: {type(exc).__name__}")
             finally:
-                client_config.timeout = previous_timeout
+                if can_use_driver:
+                    try:
+                        client_config.timeout = previous_timeout
+                    except Exception:
+                        pass
+                try:
+                    service = getattr(driver, 'service', None)
+                    if service:
+                        service.stop()
+                except Exception as exc:
+                    self.log_debug(f"关闭浏览器控制进程失败: {type(exc).__name__}")
                 self.driver = None
 
         # 清理所有未正常退出的浏览器
@@ -1787,7 +2112,7 @@ class CloudGameController(GameControllerBase):
             if self.close_all_m7a_browser():
                 self.log_info("检测到由小助手启动的浏览器，已成功关闭")
         except Exception as e:
-            self.log_warning(f"检测到由小助手启动的浏览器，关闭失败: {e}")
+            self.log_warning(f"检测到由小助手启动的浏览器，关闭失败: {_cloud_error_detail(e)}")
             return False
 
         return True

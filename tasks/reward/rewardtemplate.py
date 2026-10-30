@@ -18,7 +18,10 @@ class RewardTemplate(ABC):
         log.hr(f"检测到{self.name}奖励", 1)
         self.prepare()
         result = self.run()
-        log.hr(f"{self.name}奖励完成", 2)
+        if result is False:
+            log.warning(f"{self.name}奖励未完成或没有可领取内容")
+        else:
+            log.hr(f"{self.name}奖励完成", 2)
         return result
 
     def prepare(self):

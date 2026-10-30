@@ -15,7 +15,8 @@ import re
 
 class Instance:
     @staticmethod
-    def run(instance_type, instance_name, attempts_per_run, runs, from_failure=False, runs_completed=0):
+    def run(instance_type, instance_name, attempts_per_run, runs, from_failure=False, runs_completed=0,
+            _failure_attempts=0, on_round_completed=None):
         if not Instance.validate_instance(instance_type, instance_name):
             return False
 
@@ -50,11 +51,22 @@ class Instance:
                     else:
                         auto.click_element("./assets/images/zh_CN/fight/fight_fail.png", "image", 0.9, max_retries=10)
                         time.sleep(2)
-                        Instance.run(instance_type, instance_name, attempts_per_run, runs, from_failure=True, runs_completed=i)
+                        if _failure_attempts >= 2:
+                            log.error("副本战斗连续失败，停止重试")
+                            return False
+                        if not Instance.run(instance_type, instance_name, attempts_per_run, runs,
+                                            from_failure=True, runs_completed=i,
+                                            _failure_attempts=_failure_attempts + 1,
+                                            on_round_completed=on_round_completed):
+                            return False
                         break
 
+                if on_round_completed is not None:
+                    on_round_completed(attempts_per_run)
                 if i < runs - 1:
-                    Instance.start_instance_again(instance_type)
+                    if not Instance.start_instance_again(instance_type):
+                        log.error("无法开始下一轮副本")
+                        return False
         except RuntimeError:
             return False
 
@@ -392,10 +404,12 @@ class Instance:
 
     @staticmethod
     def start_instance_again(instance_type):
-        auto.click_element("./assets/images/zh_CN/fight/fight_again.png", "image", 0.88, max_retries=10)
+        if not auto.click_element("./assets/images/zh_CN/fight/fight_again.png", "image", 0.88, max_retries=10):
+            return False
         if instance_type == "历战余响":
             time.sleep(1)
             auto.click_element("./assets/images/zh_CN/base/confirm.png", "image", 0.9)
+        return True
 
     @staticmethod
     def complete_run(instance_type):

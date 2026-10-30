@@ -8,6 +8,7 @@ from .checkInactivity import CheckInActivity
 from .doubleactivity import DoubleActivity
 from .journey_highlights_notification import send_journey_highlights_notification
 import time
+import sys
 
 
 class ActivityManager:
@@ -47,8 +48,18 @@ class ActivityManager:
             for func_name, func in self.activity_functions.items():
                 if func_name in activity_name:
                     if func_name == "花藏繁生" or func_name == "异器盈界" or func_name == "异器盈界300%":
-                        while not func():
-                            pass
+                        if sys.platform == 'darwin':
+                            for attempt in range(3):
+                                if func():
+                                    break
+                                if attempt < 2:
+                                    log.warning(f"{func_name}未完成，稍后重试（{attempt + 1}/3）")
+                                    time.sleep(2 ** attempt)
+                            else:
+                                raise RuntimeError(f"{func_name}连续三次未完成")
+                        else:
+                            while not func():
+                                pass
                     else:
                         func()
 
@@ -83,3 +94,5 @@ def start():
         activity_manager.check_and_run_activities()
     except Exception as e:
         log.error(f"活动处理过程中发生错误: {red(e)}")
+        if sys.platform == 'darwin':
+            raise RuntimeError("活动处理失败，请查看日志") from e

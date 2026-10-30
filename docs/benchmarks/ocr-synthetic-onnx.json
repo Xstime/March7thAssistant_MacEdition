@@ -1,0 +1,42 @@
+{
+  "passed": true,
+  "requested_engine": "onnx_cpu",
+  "actual_engine": "onnx_cpu",
+  "architecture": "arm64",
+  "macos": "27.2",
+  "logical_cpu_count": 10,
+  "initialization_seconds": 0.7473,
+  "total_wall_seconds": 7.384,
+  "process_cpu_seconds": 20.842,
+  "average_process_cores": 2.82,
+  "baseline_rss_mib": 39.1,
+  "peak_sampled_rss_mib": 782.7,
+  "rss_after_run_mib": 422.8,
+  "peak_sampled_threads": 19,
+  "full_crop_origin_difference_pixels": 8.0,
+  "samples": {
+    "full": {
+      "iterations": 8,
+      "median_seconds": 0.3567,
+      "max_seconds": 0.6357,
+      "first_seconds": 0.6357,
+      "box_origin": [
+        102.0,
+        72.0
+      ],
+      "box_drift_pixels": 0.0
+    },
+    "crop": {
+      "iterations": 8,
+      "median_seconds": 0.3666,
+      "max_seconds": 0.5468,
+      "first_seconds": 0.5394,
+      "box_origin": [
+        94.0,
+        65.0
+      ],
+      "box_drift_pixels": 0.0
+    }
+  },
+  "scope": "synthetic text; not a real game frame"
+}

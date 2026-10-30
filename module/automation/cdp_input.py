@@ -1,5 +1,6 @@
 from module.automation.input_base import InputBase
 import time
+import sys
 
 
 class CdpInput(InputBase):
@@ -80,17 +81,26 @@ class CdpInput(InputBase):
         self.last_x = 0
         self.last_y = 0
         self.active_modifiers = 0
+        self.active_buttons = 0
 
     def focus(self):
         """当鼠标移浏览器时，失去焦点时，键盘输入命令可能失效，这时候需要让浏览器判定鼠标还留在云游戏内"""
+        if sys.platform == 'darwin' and getattr(self.cloud_game, '_actual_headless', False):
+            # A headless tab cannot lose focus to a physical mouse. Repeated
+            # synthetic moves can block on the macOS compositor for seconds.
+            return
         try:
             self.cloud_game.execute_cdp_cmd("Input.dispatchMouseEvent", {
                 "type": "mouseMoved",
                 "x": self.last_x, "y": self.last_y,
+                "buttons": self.active_buttons,
+                "modifiers": self.active_modifiers,
                 "pointerType": "mouse"
             })
         except Exception as e:
             self.logger.error(f"获取焦点出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     # ---------------- Mouse ----------------
     def mouse_move(self, x, y):
@@ -105,11 +115,15 @@ class CdpInput(InputBase):
             self.cloud_game.execute_cdp_cmd("Input.dispatchMouseEvent", {
                 "type": "mouseMoved",
                 "x": x, "y": y,
+                "buttons": self.active_buttons,
+                "modifiers": self.active_modifiers,
                 "pointerType": "mouse"
             })
             self.logger.debug(f"鼠标移动 ({x}, {y})")
         except Exception as e:
             self.logger.error(f"鼠标移动出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     def mouse_drag(self, start_x, start_y, end_x, end_y, duration=0.5):
         '''按住鼠标左键从起点拖动到终点'''
@@ -130,6 +144,7 @@ class CdpInput(InputBase):
         dispatch("mouseMoved", 0)
         try:
             dispatch("mousePressed", 1)
+            self.active_buttons = 1
             started = time.monotonic()
             while True:
                 elapsed = time.monotonic() - started
@@ -147,6 +162,7 @@ class CdpInput(InputBase):
             raise
         finally:
             dispatch("mouseReleased", 0)
+            self.active_buttons = 0
         return True
 
     def mouse_down(self, x, y):
@@ -157,26 +173,34 @@ class CdpInput(InputBase):
                 "button": "left",
                 "buttons": 1,
                 "x": x, "y": y,
+                "modifiers": self.active_modifiers,
                 "clickCount": 1,
                 "pointerType": "mouse"
             })
+            self.active_buttons = 1
             self.logger.debug(f"鼠标按下 ({x}, {y})")
         except Exception as e:
             self.logger.error(f"鼠标按下出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     def mouse_up(self):
         try:
             self.cloud_game.execute_cdp_cmd("Input.dispatchMouseEvent", {
                 "type": "mouseReleased",
                 "button": "left",
-                "buttons": 1,
+                "buttons": 0,
                 "x": self.last_x, "y": self.last_y,
+                "modifiers": self.active_modifiers,
                 "clickCount": 1,
                 "pointerType": "mouse"
             })
+            self.active_buttons = 0
             self.logger.debug(f"鼠标释放 ({self.last_x}, {self.last_y})")
         except Exception as e:
             self.logger.error(f"鼠标释放出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     def mouse_click(self, x, y):
         self.mouse_down(x, y)
@@ -201,6 +225,8 @@ class CdpInput(InputBase):
             self.logger.debug(f"滚轮滚动 count={count} direction={direction}")
         except Exception as e:
             self.logger.error(f"鼠标滚轮出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     # ---------------- Keyboard ----------------
     def _normalize_key_name(self, key):
@@ -223,8 +249,11 @@ class CdpInput(InputBase):
         elif event_type == "keyUp":
             modifiers &= ~modifier_bit
 
+        event_key = info["key"]
+        if sys.platform == "darwin" and k in self.CHAR_KEY_MAP and k.isalpha():
+            event_key = k.upper() if modifiers & 8 else k
         payload = {
-            "key": info["key"],
+            "key": event_key,
             "code": info["code"],
             "windowsVirtualKeyCode": info["vk"],
             "nativeVirtualKeyCode": info["vk"],
@@ -252,20 +281,28 @@ class CdpInput(InputBase):
         self.focus()
         if self._get_key_payload(key) is None:
             self.logger.error(f"未知按键：{key}")
+            if sys.platform == "darwin":
+                raise ValueError("不支持的按键")
             return
 
         try:
             self._dispatch_key_event(key, "keyDown")
-            time.sleep(wait_time)
-            self._dispatch_key_event(key, "keyUp")
+            try:
+                time.sleep(wait_time)
+            finally:
+                self._dispatch_key_event(key, "keyUp")
             self.logger.debug(f"按键按下：{key}, 持续 {wait_time}s")
         except Exception as e:
             self.logger.error(f"按键 {key} 出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     def press_key_down(self, key):
         self.focus()
         if self._get_key_payload(key) is None:
             self.logger.error(f"未知按键：{key}")
+            if sys.platform == "darwin":
+                raise ValueError("不支持的按键")
             return
 
         try:
@@ -273,11 +310,15 @@ class CdpInput(InputBase):
             self.logger.debug(f"按键按下：{key}")
         except Exception as e:
             self.logger.error(f"按键按下 {key} 出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     def press_key_up(self, key):
         self.focus()
         if self._get_key_payload(key) is None:
             self.logger.error(f"未知按键：{key}")
+            if sys.platform == "darwin":
+                raise ValueError("不支持的按键")
             return
 
         try:
@@ -285,20 +326,28 @@ class CdpInput(InputBase):
             self.logger.debug(f"按键释放：{key}")
         except Exception as e:
             self.logger.error(f"按键释放 {key} 出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     def secretly_press_key(self, key, wait_time=0.2):
         self.focus()
         if self._get_key_payload(key) is None:
-            self.logger.error(f"未知按键")
+            self.logger.error("未知按键")
+            if sys.platform == "darwin":
+                raise ValueError("不支持的按键")
             return
 
         try:
             self._dispatch_key_event(key, "keyDown")
-            time.sleep(wait_time)
-            self._dispatch_key_event(key, "keyUp")
+            try:
+                time.sleep(wait_time)
+            finally:
+                self._dispatch_key_event(key, "keyUp")
             self.logger.debug(f"按键按下, 持续 {wait_time}s")
         except Exception as e:
             self.logger.error(f"按键出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     def press_mouse(self, wait_time=0.2):
         try:
@@ -307,27 +356,37 @@ class CdpInput(InputBase):
                 "button": "left",
                 "buttons": 1,
                 "x": self.last_x, "y": self.last_y,
+                "modifiers": self.active_modifiers,
                 "clickCount": 1,
                 "pointerType": "mouse"
             })
-            time.sleep(wait_time)
-            self.cloud_game.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                "type": "mouseReleased",
-                "button": "left",
-                "buttons": 1,
-                "x": self.last_x, "y": self.last_y,
-                "clickCount": 1,
-                "pointerType": "mouse"
-            })
+            self.active_buttons = 1
+            try:
+                time.sleep(wait_time)
+            finally:
+                self.cloud_game.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                    "type": "mouseReleased",
+                    "button": "left",
+                    "buttons": 0,
+                    "x": self.last_x, "y": self.last_y,
+                    "modifiers": self.active_modifiers,
+                    "clickCount": 1,
+                    "pointerType": "mouse"
+                })
+                self.active_buttons = 0
             self.logger.debug(f"按下鼠标左键 ({self.last_x}, {self.last_y})")
         except Exception as e:
             self.logger.error(f"按下鼠标左键出错：{e}")
+            if sys.platform == "darwin":
+                raise
 
     def secretly_write(self, text, interval=0.1):
         try:
             self.focus()
             for ch in text:
-                if ch.lower() in self.CHAR_KEY_MAP:
+                if sys.platform == "darwin":
+                    self.cloud_game.execute_cdp_cmd("Input.insertText", {"text": ch})
+                elif ch.lower() in self.CHAR_KEY_MAP:
                     info = self.CHAR_KEY_MAP[ch.lower()]
                     payload = {
                         "key": info["key"],
@@ -340,8 +399,10 @@ class CdpInput(InputBase):
                     self.cloud_game.execute_cdp_cmd("Input.dispatchKeyEvent", {"type": "keyDown", **payload})
                     self.cloud_game.execute_cdp_cmd("Input.dispatchKeyEvent", {"type": "keyUp", **payload})
                 else:
-                    self.logger.warning(f"secretly_write 出错")
+                    self.logger.warning("secretly_write 不支持该字符")
                 time.sleep(interval)
             self.logger.debug("键盘输入 ***")
         except Exception as e:
-            self.logger.error(f"键盘输入 *** 出错")
+            self.logger.error("键盘输入 *** 出错")
+            if sys.platform == "darwin":
+                raise RuntimeError("键盘输入失败") from None

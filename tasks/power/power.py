@@ -9,6 +9,16 @@ from utils.date import Date
 import time
 
 
+class PowerRunError(RuntimeError):
+    def __init__(self, message, completed=0):
+        super().__init__(message)
+        self.completed = completed
+
+
+class PowerCheckpointError(Exception):
+    """Confirmed progress could not be saved; do not start another battle."""
+
+
 class Power:
     @staticmethod
     def run(skip_weekly_cleanup=False):
@@ -58,6 +68,8 @@ class Power:
         if not power_plan:
             return False
         keep_power_plan = cfg.get_value("power_plan_keep", False)
+        if not keep_power_plan and getattr(type(cfg), '_readonly', False) is True:
+            raise RuntimeError("配置处于只读模式，无法保存体力计划进度")
 
         log.hr("开始执行体力计划", 0)
 
@@ -74,13 +86,20 @@ class Power:
         # 执行计划
         updated_plan = []
         has_executed = False
+        plan_error = None
 
         for i, plan in enumerate(power_plan):
-            if len(plan) != 3:
-                log.warning(f"体力计划格式错误，跳过: {plan}")
+            if not isinstance(plan, (list, tuple)) or len(plan) != 3:
+                log.warning(f"体力计划格式错误，保留并跳过: {plan}")
+                updated_plan.append(plan)
                 continue
 
             instance_type, instance_name, count = plan
+            if (not isinstance(instance_type, str) or not isinstance(instance_name, str)
+                    or not isinstance(count, int) or isinstance(count, bool) or count <= 0):
+                log.warning(f"体力计划内容无效，保留并跳过: {plan}")
+                updated_plan.append(plan)
+                continue
 
             # 验证副本
             if not Instance.validate_instance(instance_type, instance_name):
@@ -91,8 +110,19 @@ class Power:
             log.info(f"执行体力计划 [{i + 1}/{len(power_plan)}]: {instance_type} - {instance_name}, 计划次数： {count}")
 
             try:
+                def save_progress(completed):
+                    if keep_power_plan:
+                        return
+                    remaining = max(0, count - completed)
+                    checkpoint = list(updated_plan)
+                    if remaining:
+                        checkpoint.append([instance_type, instance_name, remaining])
+                    checkpoint.extend(power_plan[i + 1:])
+                    cfg.set_value("power_plan", checkpoint)
+
                 # 执行副本
-                executed_count = Power.process(instance_type, instance_name, planned_attempts = count)
+                executed_count = Power.process(instance_type, instance_name, planned_attempts=count,
+                                               on_progress=save_progress)
 
                 if executed_count > 0:
                     has_executed = True
@@ -106,21 +136,26 @@ class Power:
                 else:
                     # 体力不足或执行失败，保留该计划及后续所有计划
                     log.info(f"无法执行: {instance_type} - {instance_name}，保留该计划")
-                    for j in range(i, len(power_plan)):
-                        remaining_plan = power_plan[j]
-                        if len(remaining_plan) == 3:
-                            updated_plan.append(remaining_plan)
+                    updated_plan.extend(power_plan[i:])
                     break
 
             except Exception as e:
                 log.error(f"执行体力计划时出错: {e}，保留该计划")
-                updated_plan.append(plan)
+                completed = min(count, max(0, getattr(e, 'completed', 0)))
+                if count > completed:
+                    updated_plan.append([instance_type, instance_name, count - completed])
+                updated_plan.extend(power_plan[i + 1:])
+                plan_error = e
+                break
 
         # 保留模式用于重复执行固定计划；关闭时维持原有的扣次数和删除逻辑
         if keep_power_plan:
             log.info(f"已启用保留体力计划，共 {len(power_plan)} 项")
         else:
             cfg.set_value("power_plan", updated_plan)
+
+        if plan_error is not None:
+            raise RuntimeError("体力计划未完成，请检查副本和日志") from plan_error
 
         if has_executed:
             if keep_power_plan:
@@ -142,7 +177,8 @@ class Power:
             Power.merge("immersifier")
 
     @staticmethod
-    def process(instance_type: str, instance_name: str, planned_attempts: int = 0, immersifier_only: bool = False):
+    def process(instance_type: str, instance_name: str, planned_attempts: int = 0, immersifier_only: bool = False,
+                on_progress=None):
         instances_power = {
             "拟造花萼（金）": 10,
             "拟造花萼（赤）": 10,
@@ -169,6 +205,29 @@ class Power:
         executed_attempts = 0
         failed_runs = 0
         FAILED_LIMIT = 3
+
+        def record_completed(count):
+            nonlocal executed_attempts
+            executed_attempts += count
+            if on_progress is not None:
+                try:
+                    on_progress(executed_attempts)
+                except Exception as exc:
+                    raise PowerCheckpointError("无法保存已完成的体力计划") from exc
+
+        def run_instance(count, runs):
+            try:
+                return Instance.run(instance_type, instance_name, count, runs,
+                                    on_round_completed=record_completed)
+            except Exception as exc:
+                raise PowerRunError("副本执行异常", completed=executed_attempts) from exc
+
+        def read_resource(reader):
+            try:
+                return reader()
+            except Exception as exc:
+                raise PowerRunError("读取体力或沉浸器失败", completed=executed_attempts) from exc
+
         while failed_runs < FAILED_LIMIT:
             
             
@@ -189,22 +248,24 @@ class Power:
                 #     log.error("沉浸器数量识别失败")
                 #     return True
 
-                immersifier_count = Power.get_immersifier_count()
+                immersifier_count = read_resource(Power.get_immersifier_count)
                 if immersifier_only:
                     attempts = immersifier_count
                     log.info(f"只使用沉浸器进行 {attempts} 次挑战")
                 else:
-                    power = Power.get()
+                    power = read_resource(Power.get)
                     attempts = power // instance_power_min
                     attempts += immersifier_count
                     log.info(f"开拓力: {power} + 沉浸器: {immersifier_count} = {attempts} 次挑战")
             else:
-                power = Power.get()
+                power = read_resource(Power.get)
                 attempts = power // instance_power_min
                 log.info(f"开拓力: {power} = {attempts} 次挑战")
                 
             if attempts == 0:
                 log.info(f"开拓力 < {instance_power_min}")
+                if failed_runs:
+                    raise PowerRunError("副本失败后剩余体力不足，无法继续重试", completed=executed_attempts)
                 break
             
             if planned_attempts - executed_attempts > 0:
@@ -219,24 +280,22 @@ class Power:
             
             full_runs = attempts // attempts_per_run
             if full_runs >= 1:
-                result = Instance.run(instance_type, instance_name, attempts_per_run, full_runs)
-                if result == True:
-                    executed_attempts += full_runs * attempts_per_run
-                else:
+                result = run_instance(attempts_per_run, full_runs)
+                if result is not True:
                     failed_runs += 1
                     log.error(f"检测到该次副本未正常运行，重试：{failed_runs}/{FAILED_LIMIT}")
                     continue
 
             remain_attempts = attempts % attempts_per_run
             if remain_attempts >= 1:
-                result = Instance.run(instance_type, instance_name, remain_attempts, 1)
-                if result == True:
-                    executed_attempts += remain_attempts
-                else:
+                result = run_instance(remain_attempts, 1)
+                if result is not True:
                     failed_runs += 1
                     log.error(f"检测到该次副本未正常运行，重试：{failed_runs}/{FAILED_LIMIT}")
                     continue
             break
+        if failed_runs >= FAILED_LIMIT:
+            raise PowerRunError("副本多次运行失败", completed=executed_attempts)
         return executed_attempts
     
     @staticmethod

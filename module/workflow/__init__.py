@@ -7,6 +7,7 @@ import time
 import traceback
 import uuid
 import zipfile
+import sys
 from datetime import datetime
 
 from module.automation import auto
@@ -14,9 +15,10 @@ from module.config import cfg
 from module.logger import log
 from module.localization import tr
 from module.notification import notif
+from utils.runtime_paths import data_dir
 
 WORKFLOW_FILE_NAME = "workflow.yaml"
-WORKFLOW_USER_ROOT = os.path.abspath("./config/workflows")
+WORKFLOW_USER_ROOT = os.path.join(data_dir(), "config", "workflows")
 WORKFLOW_EXAMPLE_ROOT = os.path.abspath("./assets/config/workflows")
 WORKFLOW_OFFICIAL_CONFIG_FILE = "official_workflows.yaml"
 WORKFLOW_OFFICIAL_CONFIG_PATH = os.path.join(WORKFLOW_EXAMPLE_ROOT, WORKFLOW_OFFICIAL_CONFIG_FILE)
@@ -66,7 +68,8 @@ CONDITION_TYPE_LABELS = {
 
 def ensure_workflow_directories():
     os.makedirs(WORKFLOW_USER_ROOT, exist_ok=True)
-    os.makedirs(WORKFLOW_EXAMPLE_ROOT, exist_ok=True)
+    if not (sys.platform == "darwin" and getattr(sys, "frozen", False)):
+        os.makedirs(WORKFLOW_EXAMPLE_ROOT, exist_ok=True)
 
 
 def _workflow_asset_directory(base_dir: str, kind: str) -> str:

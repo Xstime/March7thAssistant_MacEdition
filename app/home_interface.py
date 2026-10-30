@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPainterPath, QImage, QAction
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QGraphicsDropShadowEffect, QFileDialog, QDialog
 
-from qfluentwidgets import ScrollArea, FluentIcon, RoundMenu, PushButton
+from qfluentwidgets import ScrollArea, FluentIcon, RoundMenu, PushButton, InfoBar, InfoBarPosition
 
 from .common.style_sheet import StyleSheet
 from .card.samplecardview1 import SampleCardView1
@@ -175,10 +175,15 @@ class HomeInterface(ScrollArea):
 
         for card in cards_data:
             action = self._build_card_action(card)
+            title = display_label(card.get("title", ""))
+            if sys.platform == 'darwin' and card.get('action_type') == 'single':
+                from utils.macos_capabilities import unsupported_reason
+                if unsupported_reason(card.get('task_id')):
+                    title += '（macOS 不支持）'
             self.basicInputView.addSampleCard(
                 icon=card.get("icon", ""),
                 # 内置卡片存的是中文原文，这里按当前语言显示；用户自定义标题原样显示
-                title=display_label(card.get("title", "")),
+                title=title,
                 action=action
             )
 
@@ -197,6 +202,10 @@ class HomeInterface(ScrollArea):
                 task_id = item.get("task_id", "")
                 # 同上：内置菜单项存中文原文，显示时按当前语言解析
                 label = display_label(item.get("label", ""))
+                if sys.platform == 'darwin':
+                    from utils.macos_capabilities import unsupported_reason
+                    if unsupported_reason(task_id):
+                        label += '（macOS 不支持）'
                 if task_id in HOME_EXTRA_TASKS:
                     result[label] = self._get_extra_task_action(task_id)
                 else:
@@ -212,9 +221,21 @@ class HomeInterface(ScrollArea):
             cfg.set_value("home_cards", cards_data)
         return cards_data
 
-    @staticmethod
-    def _get_extra_task_action(task_id):
+    def _get_extra_task_action(self, task_id):
         """获取特殊主页操作的 lambda"""
+        if sys.platform == 'darwin':
+            from utils.macos_capabilities import unsupported_reason
+            reason = unsupported_reason(task_id)
+            if reason:
+                return lambda: InfoBar.warning(title=tr('当前操作不可用'), content=reason,
+                    orient=Qt.Horizontal, isClosable=True, position=InfoBarPosition.TOP,
+                    duration=6000, parent=self)
+            if task_id in ('_open_universe_homepage', '_open_fight_homepage'):
+                import webbrowser
+                url = ('https://github.com/CHNZYX/Auto_Simulated_Universe'
+                       if task_id == '_open_universe_homepage' else
+                       'https://github.com/linruowuyin/Fhoe-Rail')
+                return lambda: webbrowser.open(url)
         if task_id == "_reset_universe_config":
             return lambda: [os.remove(p) for p in map(lambda f: os.path.join(cfg.universe_path, f), ["info.yml", "info_old.yml"]) if os.path.exists(p)]
         elif task_id == "_open_universe_dir":

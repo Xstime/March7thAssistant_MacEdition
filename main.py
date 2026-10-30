@@ -2,7 +2,7 @@ import os
 import sys
 import argparse
 # 将当前工作目录设置为程序所在的目录，确保无论从哪里执行，其工作目录都正确设置为程序本身的位置，避免路径错误。
-os.chdir(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)else os.path.dirname(os.path.abspath(__file__)))
+os.chdir((sys._MEIPASS if sys.platform == 'darwin' else os.path.dirname(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__)))
 
 from utils.console import ensure_utf8_output
 
@@ -11,7 +11,7 @@ from utils.console import ensure_utf8_output
 ensure_utf8_output()
 
 from utils.dpi import configure_dpi_awareness
-from utils.tasks import AVAILABLE_TASKS
+from utils.tasks import AVAILABLE_TASKS, TASK_NAMES
 
 
 configure_dpi_awareness()
@@ -176,6 +176,8 @@ telemetry.init(
 
 
 def first_run():
+    if sys.platform == "darwin":
+        return
     if not is_docker_started() and not cfg.get_value(base64.b64decode("YXV0b191cGRhdGU=").decode("utf-8")):
         log.error("首次使用请先打开图形界面 March7th Launcher")
         pause_always()
@@ -186,6 +188,9 @@ def run_main_actions(no_run_immediately=False):
     is_first_run = no_run_immediately
     while True:
         if is_first_run:
+            from utils.task_progress import set_major_step, set_phase
+            set_major_step(0, 0)
+            set_phase("waiting", "等待下一次运行")
             is_first_run = False
             game.after_finish_is_loop()
             continue
@@ -194,10 +199,18 @@ def run_main_actions(no_run_immediately=False):
         telemetry.track_task_start("main")
         main_start_time = time.time()
         try:
+            from utils.task_progress import set_major_step, set_phase
+            set_major_step(1, 3)
+            set_phase("initializing", "启动云游戏")
             version.start()
             game.start()
+            set_major_step(2, 3)
+            set_phase("running", "执行已配置任务")
             Daily.start()
-            reward.start()
+            set_major_step(3, 3)
+            set_phase("running", "领取奖励")
+            if reward.start() is False and sys.platform == "darwin":
+                raise RuntimeError("部分奖励未能确认领取，请检查日志")
             telemetry.track_task_complete("main", True, time.time() - main_start_time)
             game.stop(True)
         except Exception:
@@ -206,13 +219,26 @@ def run_main_actions(no_run_immediately=False):
 
 
 def run_sub_task(action):
+    if sys.platform == "darwin":
+        from utils.macos_capabilities import unsupported_reason
+        reason = unsupported_reason(action)
+        if reason:
+            raise RuntimeError(reason)
+    from utils.task_progress import set_major_step, set_phase
+    set_major_step(0, 0)
+    set_phase("initializing", "启动云游戏")
     if action not in ("currencywarstemp", "divergenttemp"):
         game.start()
     else:
-        if cfg.cloud_game_enable:
-            if not cloud_game.start_game_process():
-                raise ConnectionError("启动或连接浏览器失败")
-        game.switch_to_game()
+        if sys.platform == "darwin":
+            if not cfg.cloud_game_enable:
+                raise RuntimeError("macOS 中途接管需要云游戏模式")
+            cloud_game.attach_existing_game()
+        else:
+            if cfg.cloud_game_enable:
+                if not cloud_game.start_game_process():
+                    raise ConnectionError("启动或连接浏览器失败")
+            game.switch_to_game()
 
     def _run_loop_task_with_telemetry(task_id, task_fn):
         while True:
@@ -220,6 +246,8 @@ def run_sub_task(action):
             task_start_time = time.time()
             try:
                 success = bool(task_fn())
+                if sys.platform == "darwin" and not success:
+                    raise RuntimeError(f"循环任务 {task_id} 未完成，已停止")
                 telemetry.track_task_complete(task_id, success, time.time() - task_start_time)
             except Exception:
                 telemetry.track_task_complete(task_id, False, time.time() - task_start_time)
@@ -230,22 +258,27 @@ def run_sub_task(action):
         if mode == "loop":
             _run_loop_task_with_telemetry("currencywarsloop", war.start)
         elif mode == "temp":
-            war.loop()
+            return war.loop()
         else:
-            war.start()
+            return war.start()
 
     def divergent(mode=None):
         universe = DivergentUniverse()
         if mode == "loop":
             _run_loop_task_with_telemetry("divergentloop", universe.start)
         elif mode == "temp":
-            universe.loop()
+            return universe.loop()
         else:
-            universe.start()
+            return universe.start()
+
+    def daily_task():
+        if Daily.run() is False:
+            return False
+        return reward.start()
 
     sub_tasks = {
         "routine": Daily.routine,
-        "daily": lambda: (Daily.run(), reward.start()),
+        "daily": daily_task,
         "power": Power.run,
         "currencywars": lambda: currencywars(),
         "currencywarsloop": lambda: currencywars("loop"),
@@ -263,13 +296,16 @@ def run_sub_task(action):
     }
     task = sub_tasks.get(action)
     if task:
+        set_phase("running", TASK_NAMES.get(action, action))
         if action in {"currencywarsloop", "divergentloop"}:
             task()
         else:
             telemetry.track_task_start(action)
             task_start_time = time.time()
             try:
-                task()
+                result = task()
+                if result is False:
+                    raise RuntimeError(f"任务 {action} 未能完成")
                 telemetry.track_task_complete(action, True, time.time() - task_start_time)
             except Exception:
                 telemetry.track_task_complete(action, False, time.time() - task_start_time)
@@ -323,16 +359,26 @@ def run_workflow_action(workflow_name: str, workflow_step_path=None):
         sys.exit(1)
     # 与流程编排启动语义一致：游戏未启动或无法切换到游戏窗口时直接报错终止，
     # 避免按键/点击打进当前聚焦的其它窗口（定时任务、命令行直跑均在此收口）
+    if sys.platform == "darwin" and cfg.cloud_game_enable and not cloud_game.is_game_running():
+        game.start()
     if not game.ensure_game_ready():
         sys.exit(1)
     runner = WorkflowRunner(
         log_callback=lambda message: print(message, flush=True),
         mirror_to_project_log=False,
     )
+    from utils.task_progress import set_major_step, set_phase
+    set_major_step(0, 0)
+    set_phase("running", "流程编排")
     return runner.run(workflow)
 
 
 def main(action=None, no_run_immediately=False, workflow_name=None, workflow_step_path=None):
+    if sys.platform == "darwin" and action:
+        from utils.macos_capabilities import unsupported_reason
+        reason = unsupported_reason(action)
+        if reason:
+            raise RuntimeError(reason)
     first_run()
     # 启动暂停控制器（仅在 GUI 注入了 MARCH7TH_CONTROL_FILE 时生效，其余场景惰性关闭）
     pause_ctl.start()

@@ -20,12 +20,12 @@ class ChallengeManager:
         if mode == "memoryone":
             return game_mode.run(count)
         else:
-            game_mode.run()
+            return game_mode.run()
 
 
 def start(mode: Literal["memoryofchaos", "purefiction", "memoryone"], count=1):
     challenge_manager = ChallengeManager()
-    challenge_manager.run(mode, count)
+    return challenge_manager.run(mode, count)
 
 
 def start_memory_one(count=1):

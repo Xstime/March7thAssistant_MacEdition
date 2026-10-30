@@ -7,3 +7,5 @@ class Assist(RewardTemplate):
         if auto.click_element("./assets/images/share/reward/assist/gift.png", "image", 0.9):
             time.sleep(1)
             auto.press_key("esc")
+            return True
+        return False

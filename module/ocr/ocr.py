@@ -589,6 +589,8 @@ class OCR:
             if windows_supported and has_onnxruntime:
                 use_dml = True
                 prefer_engine = EngineType.ONNXRUNTIME
+            elif sys.platform == 'darwin':
+                prefer_engine = EngineType.ONNXRUNTIME
             else:
                 prefer_engine = choose_cpu_fallback_engine()
         elif effective_mode in (OCR_MODE_GPU, OCR_MODE_ONNX_DML):
@@ -678,6 +680,24 @@ class OCR:
                     "Rec.engine_type": prefer_engine,
                 }
 
+                if sys.platform == "darwin":
+                    # Each model creates its own runtime session. Leaving the defaults
+                    # unconstrained can create several competing CPU thread pools.
+                    cpu_threads = min(4, os.cpu_count() or 1)
+                    params["EngineConfig.onnxruntime.intra_op_num_threads"] = cpu_threads
+                    params["EngineConfig.onnxruntime.inter_op_num_threads"] = 1
+                    params["EngineConfig.openvino.inference_num_threads"] = cpu_threads
+                    model_dir = os.path.abspath("assets/ocr/models")
+                    det_model = os.path.join(model_dir, "ch_PP-OCRv4_det_mobile.onnx")
+                    cls_model = os.path.join(model_dir, "ch_ppocr_mobile_v2.0_cls_mobile.onnx")
+                    rec_model = os.path.join(model_dir, "ch_PP-OCRv4_rec_mobile.onnx")
+                    if not all(os.path.isfile(path) for path in (det_model, cls_model, rec_model)):
+                        raise RuntimeError("缺少 OCR 模型，请重新安装完整的 macOS 版本")
+                    params["Global.model_root_dir"] = model_dir
+                    params["Det.model_path"] = det_model
+                    params["Cls.model_path"] = cls_model
+                    params["Rec.model_path"] = rec_model
+
                 # 891
                 machine = platform.machine().lower()
                 if machine.startswith(("arm", "aarch")) and prefer_engine == EngineType.OPENVINO:
@@ -758,6 +778,14 @@ class OCR:
             return False
         return [[item['box'], (item['txt'], item['score'])] for item in result]
 
+    def _record_diagnostic(self, results):
+        if sys.platform == 'darwin':
+            from utils.runtime_diagnostics import record_event
+            recognized = isinstance(results, (list, tuple)) and any(
+                isinstance(item, dict) and item.get('txt') for item in results)
+            record_event('ocr', engine=self._resolved_mode, recognized=recognized)
+        return results
+
     def run(self, img, max_retries=3):
         """执行OCR识别，支持Image对象、文件路径和np.ndarray对象"""
         self.instance_ocr()
@@ -823,7 +851,7 @@ class OCR:
                     # self._maybe_reinit_openvino()
                     # OpenVINO 执行后检查可用内存，不足 1GB 则降级
                     self._maybe_fallback_openvino_due_to_memory()
-                    return results
+                    return self._record_diagnostic(results)
                 except Exception as e:
                     # 检查是否为编码错误（直接或通过异常链）
                     if self._is_unicode_error(e):
@@ -844,7 +872,7 @@ class OCR:
                                 # 降级到 CPU 后仍会走同样的输出构造流程，因此同样保留
                                 # 周期性 full GC 以控制长时间循环时的峰值内存。
                                 self._maybe_collect_garbage()
-                                return results
+                                return self._record_diagnostic(results)
                             except Exception as cpu_e:
                                 self.logger.error(f"CPU 模式仍然失败: {cpu_e}")
                                 raise
@@ -858,7 +886,7 @@ class OCR:
                             self.logger.info("已切换到 ONNXRuntime 模式")
                             results = self.replace_strings(original_dict)
                             self._maybe_collect_garbage()
-                            return results
+                            return self._record_diagnostic(results)
                         except Exception as onnx_e:
                             self.logger.error(f"ONNXRuntime 模式仍然失败: {onnx_e}")
                             raise
@@ -873,7 +901,7 @@ class OCR:
                 try:
                     original_dict = self.ocr(img).to_json()
                     self.logger.info("CPU 模式执行成功")
-                    return self.replace_strings(original_dict)
+                    return self._record_diagnostic(self.replace_strings(original_dict))
                 except Exception as e:
                     if self._is_unicode_error(e):
                         self.logger.error(f"CPU 模式仍然失败: {e}")

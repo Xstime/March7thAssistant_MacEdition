@@ -30,6 +30,7 @@ from module.localization import tr
 import base64
 import os
 import sys
+import time
 
 
 class ConfigWatcher(QObject):
@@ -350,6 +351,11 @@ class MainWindow(MSFluentWindow):
         # 创建托盘菜单
         tray_menu = SystemTrayMenu(parent=self)
         tray_menu.aboutToShow.connect(self._on_tray_menu_about_to_show)
+        self._notification_times = {}
+
+        self.trayStatusAction = QAction('状态：未运行', self)
+        self.trayStatusAction.setEnabled(False)
+        tray_menu.addAction(self.trayStatusAction)
 
         # 显示主界面
         show_action = QAction(tr('显示主界面'), self)
@@ -360,6 +366,14 @@ class MainWindow(MSFluentWindow):
         run_action = QAction(tr('完整运行'), self)
         run_action.triggered.connect(self.startFullTask)
         tray_menu.addAction(run_action)
+
+        stop_action = QAction('停止当前任务', self)
+        stop_action.triggered.connect(lambda: self.logInterface.stopTask(user_initiated=True))
+        tray_menu.addAction(stop_action)
+
+        logs_action = QAction('查看任务日志', self)
+        logs_action.triggered.connect(self._showTaskLog)
+        tray_menu.addAction(logs_action)
 
         tray_menu.addSeparator()
 
@@ -386,6 +400,22 @@ class MainWindow(MSFluentWindow):
         if sys.platform == 'win32':
             self.tray_icon.activated.connect(self.onTrayIconActivated)
         self.tray_icon.show()
+        if sys.platform == 'darwin':
+            self.logInterface.cloudLoginPanel.qrAvailable.connect(
+                lambda: self._macNotify('login', '需要扫码登录', '请打开应用扫描云游戏登录二维码。'))
+
+    def _showTaskLog(self):
+        self._show_main_window()
+        self.switchTo(self.logInterface)
+
+    def _macNotify(self, key, title, message):
+        if sys.platform != 'darwin' or not cfg.get_value('macos_system_notifications', True):
+            return
+        now = time.monotonic()
+        if now - self._notification_times.get(key, -60) < 60:
+            return
+        self._notification_times[key] = now
+        self.tray_icon.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, 5000)
 
     def is_minimized_to_tray(self) -> bool:
         """是否处于最小化到托盘状态（主窗口隐藏且托盘图标可见）"""
@@ -446,10 +476,20 @@ class MainWindow(MSFluentWindow):
 
     def _on_tray_menu_about_to_show(self):
         """托盘菜单即将显示时激活窗口，解决 Windows 上点击外部区域无法关闭菜单的问题"""
+        if sys.platform == 'darwin':
+            self.trayStatusAction.setText('状态：正在运行' if self.logInterface.isTaskRunning() else '状态：未运行')
         self.activateWindow()
 
     def _onStartTask(self, command):
         """处理任务启动信号"""
+        if sys.platform == 'darwin':
+            from utils.macos_capabilities import unsupported_reason
+            reason = unsupported_reason(command)
+            if reason:
+                InfoBar.warning(title=tr('当前任务不可用'), content=reason,
+                                orient=Qt.Horizontal, isClosable=True,
+                                position=InfoBarPosition.TOP, duration=6000, parent=self)
+                return
         # 检查是否有任务正在运行
         if self.logInterface.isTaskRunning():
             InfoBar.warning(
@@ -470,6 +510,8 @@ class MainWindow(MSFluentWindow):
         self.switchTo(self.logInterface)
         # 启动任务
         self.logInterface.startTask(command)
+        if self.logInterface._hasActiveStartedProcess():
+            self._macNotify('start', '任务已启动', f'{command} 正在运行。')
 
     def startFullTask(self):
         """启动完整运行任务"""
@@ -650,6 +692,12 @@ class MainWindow(MSFluentWindow):
 
     def _onTaskFinished(self, exit_code):
         """处理任务完成信号"""
+        if sys.platform == 'darwin' and getattr(self.logInterface, 'last_task_user_stopped', False):
+            self._macNotify('finish', '任务已停止', '任务已按你的操作停止。')
+        elif exit_code == 0:
+            self._macNotify('finish', '任务进程已结束', '请查看日志确认各项任务结果。')
+        else:
+            self._macNotify('failure', '任务未正常完成', '请打开日志查看原因。')
         # 如果是启动任务且设置了完成后退出，则在任务成功完成时退出程序
         if self.exit_on_complete and self.startup_task and exit_code == 0:
             from PySide6.QtCore import QTimer
@@ -865,6 +913,30 @@ class MainWindow(MSFluentWindow):
         start_game_button = self.navigationInterface.widget('startGameButton')
         if start_game_button:
             start_game_button.setEnabled(False)
+        if sys.platform == 'darwin' and not cfg.cloud_game_enable:
+            InfoBar.warning(
+                title=tr('云游戏不可用'),
+                content=tr('云游戏已被环境变量关闭；macOS 不支持 Windows 本地客户端，请移除该环境变量后重启。'),
+                orient=Qt.Horizontal, isClosable=True,
+                position=InfoBarPosition.TOP, duration=6000, parent=self
+            )
+            if start_game_button:
+                start_game_button.setEnabled(True)
+            return
+        if (sys.platform == 'darwin' and cfg.cloud_game_enable
+                and self.logInterface._hasActiveStartedProcess()):
+            InfoBar.warning(
+                title=tr('任务正在运行'),
+                content=tr('请先停止当前任务，再打开云游戏浏览器。'),
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self
+            )
+            if start_game_button:
+                start_game_button.setEnabled(True)
+            return
         game = get_game_controller()
         if game.is_game_running():
             InfoBar.warning(
@@ -879,7 +951,9 @@ class MainWindow(MSFluentWindow):
             if start_game_button:
                 start_game_button.setEnabled(True)
             return
-        if cfg.cloud_game_enable and cfg.browser_type == "integrated" and not game.is_integrated_browser_downloaded():
+        explicit_browser = os.environ.get('MARCH7TH_BROWSER_PATH') and os.environ.get('MARCH7TH_DRIVER_PATH')
+        if (cfg.cloud_game_enable and cfg.browser_type == "integrated" and not explicit_browser
+                and not game.is_integrated_browser_downloaded()):
             InfoBar.warning(
                 title=tr('正在下载内置浏览器(ง •̀_•́)ง'),
                 content=tr("下载成功后，将自动启动云·星穹铁道"),
@@ -912,8 +986,8 @@ class MainWindow(MSFluentWindow):
     def on_game_launched(self, result):
         if result == GameStartStatus.SUCCESS:
             InfoBar.success(
-                title=tr('启动成功(＾∀＾●)'),
-                content="",
+                title=tr('云游戏浏览器已打开') if sys.platform == 'darwin' and cfg.cloud_game_enable else tr('启动成功(＾∀＾●)'),
+                content=tr('请在浏览器中登录并进入游戏。') if sys.platform == 'darwin' and cfg.cloud_game_enable else "",
                 orient=Qt.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,

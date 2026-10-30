@@ -25,7 +25,7 @@ TASK_NAME = "March7thAssistantAutostart"
 
 def is_supported() -> bool:
     """开机自启仅支持 Windows"""
-    return IS_WINDOWS
+    return IS_WINDOWS or (sys.platform == 'darwin' and getattr(sys, 'frozen', False))
 
 
 def launcher_command() -> tuple:
@@ -34,6 +34,8 @@ def launcher_command() -> tuple:
     打包后为 ``March7th Launcher.exe --autostart``；源码运行时为 ``python app.py --autostart``。
     """
     if getattr(sys, "frozen", False):
+        if sys.platform == 'darwin':
+            return sys.executable, '--autostart'
         return os.path.abspath("./March7th Launcher.exe"), "--autostart"
     return sys.executable, f'"{os.path.abspath("./app.py")}" --autostart'
 
@@ -44,6 +46,8 @@ def cli_command(task_id: str) -> list:
     打包后为 ``March7th Assistant.exe <task>``；源码运行时为 ``python main.py <task>``。
     """
     if getattr(sys, "frozen", False):
+        if sys.platform == "darwin":
+            return [sys.executable, "--task-worker", task_id]
         return [os.path.abspath("./March7th Assistant.exe"), task_id]
     return [sys.executable, os.path.abspath("./main.py"), task_id]
 
@@ -69,6 +73,9 @@ def remove_legacy_task() -> bool:
 
 def is_enabled() -> bool:
     """新版开机启动是否开启（登录触发的计划任务是否存在）"""
+    if not IS_WINDOWS and sys.platform == 'darwin' and getattr(sys, 'frozen', False):
+        from utils import macos_autostart
+        return macos_autostart.is_enabled()
     if not IS_WINDOWS:
         return False
     try:
@@ -80,6 +87,12 @@ def is_enabled() -> bool:
 
 def enable() -> bool:
     """创建开机自启计划任务（登录时触发、以最高权限运行、延迟30秒）"""
+    if not IS_WINDOWS and sys.platform == 'darwin' and getattr(sys, 'frozen', False):
+        try:
+            from utils import macos_autostart
+            return macos_autostart.enable()
+        except OSError:
+            return False
     if not IS_WINDOWS:
         return False
     try:
@@ -97,6 +110,12 @@ def enable() -> bool:
 
 def disable() -> bool:
     """删除开机自启计划任务"""
+    if not IS_WINDOWS and sys.platform == 'darwin' and getattr(sys, 'frozen', False):
+        try:
+            from utils import macos_autostart
+            return macos_autostart.disable()
+        except OSError:
+            return False
     if not IS_WINDOWS:
         return False
     try:

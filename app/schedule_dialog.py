@@ -16,6 +16,7 @@ from utils.tasks import TASK_NAMES
 from module.workflow import load_workflows
 import uuid
 import os
+import sys
 import json
 from module.config import cfg
 from module.localization import tr
@@ -838,6 +839,12 @@ class ScheduleManagerDialog(MessageBox):
         # 插入到 textLayout
         self.textLayout.addWidget(self.table, 0, Qt.AlignmentFlag.AlignTop)
         self.textLayout.addLayout(btn_layout)
+        if sys.platform == 'darwin':
+            self.catch_up_check = CheckBox('唤醒或重新打开后补跑最近一项延误任务', self)
+            self.catch_up_check.setChecked(bool(cfg.get_value('macos_schedule_catch_up', False)))
+            self.catch_up_check.setToolTip(tr('应用关闭或睡眠期间不会执行；唤醒或下次启动时检查最近七天。已有任务运行时等待空闲后补跑。'))
+            self.catch_up_check.toggled.connect(lambda checked: cfg.set_value('macos_schedule_catch_up', bool(checked)))
+            self.textLayout.addWidget(self.catch_up_check)
 
         # 连接
         self.add_btn.clicked.connect(self._on_add)

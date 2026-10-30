@@ -22,13 +22,15 @@ from .common.icon import UiIcon
 from .common.schedule import (task_trigger_mode, scheduled_task_slot,
                               scheduled_task_payload, find_scheduled_task, scheduled_task_chain,
                               split_task_arguments, milliseconds_to_next_minute,
-                              next_scheduled_datetime, schedule_weekday_labels)
+                              next_scheduled_datetime, schedule_weekday_labels, missed_schedule_slot)
 from module.config import cfg
 from module.game import get_game_controller
 from utils.tasks import TASK_NAMES, PAUSABLE_TASKS
 from utils.pause import (COMMAND_PAUSE, COMMAND_RESUME, STATE_PAUSING, STATE_PAUSED,
                          STATE_RUNNING, write_command, read_state, reset_files)
 from utils.desktop import open_log_folder
+from utils.runtime_paths import data_dir
+from utils.schedule_state import read_checkpoint, write_checkpoint, record_schedule_event
 from .schedule_dialog import ScheduleManagerDialog
 from module.notification import notif
 from module.localization import tr
@@ -37,6 +39,22 @@ import threading
 import subprocess as sp
 import ctypes
 import time
+
+
+def _schedule_event(interface, message):
+    interface.appendLog(message + '\n')
+    if sys.platform == 'darwin':
+        record_schedule_event(message)
+
+
+def _write_schedule_checkpoint(interface, minute):
+    if write_checkpoint(minute):
+        interface._schedule_checkpoint_failed = False
+        return True
+    if not getattr(interface, '_schedule_checkpoint_failed', False):
+        _schedule_event(interface, "定时任务状态保存失败；重新打开应用后可能无法准确恢复，请检查数据目录权限。")
+    interface._schedule_checkpoint_failed = True
+    return False
 
 if sys.platform == 'win32':
     import keyboard
@@ -330,6 +348,7 @@ class LogInterface(ScrollArea):
         self._external_task_name = None
         self._external_task_stop_callback = None
         self._external_task_user_initiated_stop = False
+        self.last_task_user_stopped = False
         # 清理日志中的 ANSI 控制序列，兼容标准 ESC 序列与缺失 ESC 的残留序列（如 [36m）
         self._ansi_escape_re = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         self._orphan_ansi_re = re.compile(r'(?<!\x1b)\[(?:\d{1,3}(?:;\d{1,3})*)?[A-Za-z]')
@@ -389,6 +408,8 @@ class LogInterface(ScrollArea):
         self._schedule_running = False
         # 记录每个定时任务最后触发的“计划时间槽”时间戳（秒）
         self._last_triggered_ts = {}
+        self._pending_missed_schedule = None
+        self._schedule_ignore_until_minute = None
         self._overlay_enabled = bool(cfg.get_value('log_overlay_enable', False)) if sys.platform == 'win32' else False
         self._log_overlay = GameLogOverlay() if sys.platform == 'win32' else None
         self._overlay_timer = None
@@ -538,6 +559,21 @@ class LogInterface(ScrollArea):
         self.vBoxLayout.setSpacing(15)
         self.vBoxLayout.addWidget(self.headerWidget)
         self.vBoxLayout.addWidget(self.buttonWidget)
+        if sys.platform == 'darwin':
+            from .cloud_login_panel import CloudLoginPanel
+            from .cloud_preview_panel import CloudPreviewPanel
+            from .runtime_diagnostics_panel import RuntimeDiagnosticsPanel
+            from .task_progress_panel import TaskProgressPanel
+            self.taskProgressPanel = TaskProgressPanel(lambda: self.process, self.scrollWidget,
+                                                       pause_state=lambda: self._pause_state,
+                                                       external_active=lambda: self._external_task_active)
+            self.vBoxLayout.addWidget(self.taskProgressPanel)
+            self.cloudLoginPanel = CloudLoginPanel(self.scrollWidget, task_process=lambda: self.process)
+            self.vBoxLayout.addWidget(self.cloudLoginPanel)
+            self.cloudPreviewPanel = CloudPreviewPanel(self.scrollWidget)
+            self.vBoxLayout.addWidget(self.cloudPreviewPanel)
+            self.runtimeDiagnosticsPanel = RuntimeDiagnosticsPanel(lambda: self.process, self.scrollWidget)
+            self.vBoxLayout.addWidget(self.runtimeDiagnosticsPanel)
         self.vBoxLayout.addWidget(self.logCard, 1)
         self.vBoxLayout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
@@ -1051,7 +1087,7 @@ class LogInterface(ScrollArea):
             pass
 
     def _startScheduleTimer(self):
-        """跳过启动所在分钟，从下一次分钟变化开始调度。"""
+        """启动调度并根据持久记录处理当前和错过的计划。"""
         if self._schedule_timer is None:
             self._schedule_timer = QTimer(self)
             self._schedule_timer.setSingleShot(True)
@@ -1061,6 +1097,40 @@ class LogInterface(ScrollArea):
         self._last_schedule_minute = now.toSecsSinceEpoch() // 60
         self._schedule_running = True
         self._schedule_timer.start(milliseconds_to_next_minute(now))
+        if sys.platform == 'darwin':
+            previous = read_checkpoint()
+            if previous is None:
+                # A newly installed scheduler must still consider a task due in
+                # the current minute; an existing same-minute checkpoint means
+                # that minute has already been considered on an earlier launch.
+                previous = self._last_schedule_minute - 1
+                QTimer.singleShot(0, lambda: self._recoverSchedulesAtStartup(previous))
+            elif previous < self._last_schedule_minute:
+                # Wait until the window and startup task handling are initialized.
+                QTimer.singleShot(0, lambda: self._recoverSchedulesAtStartup(previous))
+            else:
+                if previous is not None and previous > self._last_schedule_minute:
+                    _schedule_event(self, "系统时间发生回退，未自动补跑历史任务。")
+                    self._schedule_ignore_until_minute = previous
+                else:
+                    _write_schedule_checkpoint(self, self._last_schedule_minute)
+
+    def _recoverSchedulesAtStartup(self, previous_minute):
+        if not self._schedule_running:
+            return
+        now = QDateTime.currentDateTime()
+        current_minute = now.toSecsSinceEpoch() // 60
+        if current_minute <= previous_minute:
+            return
+        try:
+            self._checkScheduledTime(now)
+            if current_minute > previous_minute + 1:
+                self._handleMissedSchedules(previous_minute, now)
+            self._runPendingMissedSchedule()
+            if not getattr(self, '_pending_missed_schedule', None):
+                _write_schedule_checkpoint(self, current_minute)
+        except Exception as error:
+            _schedule_event(self, f"恢复定时任务状态失败：{error}")
 
     def _onScheduleTimerTimeout(self):
         if not self._schedule_running:
@@ -1069,18 +1139,112 @@ class LogInterface(ScrollArea):
             now = QDateTime.currentDateTime()
             current_minute = now.toSecsSinceEpoch() // 60
             if current_minute != self._last_schedule_minute:
+                previous_minute = self._last_schedule_minute
                 self._last_schedule_minute = current_minute
+                if sys.platform == 'darwin' and current_minute < previous_minute:
+                    self._schedule_ignore_until_minute = max(
+                        previous_minute, getattr(self, '_schedule_ignore_until_minute', None) or previous_minute)
+                    _schedule_event(self, "系统时间发生回退，暂缓定时任务以避免重复执行。")
+                    return
+                ignore_until = getattr(self, '_schedule_ignore_until_minute', None)
+                if sys.platform == 'darwin' and ignore_until is not None:
+                    if current_minute <= ignore_until:
+                        return
+                    self._schedule_ignore_until_minute = None
                 self._checkScheduledTime(now)
+                if sys.platform == 'darwin' and current_minute > previous_minute + 1:
+                    self._handleMissedSchedules(previous_minute, now)
+                if sys.platform == 'darwin':
+                    self._runPendingMissedSchedule()
+                    if not getattr(self, '_pending_missed_schedule', None):
+                        _write_schedule_checkpoint(self, current_minute)
         except Exception as error:
             self.appendLog(f"检查定时任务失败: {error}\n")
         finally:
             if self._schedule_running:
                 self._schedule_timer.start(milliseconds_to_next_minute(QDateTime.currentDateTime()))
 
+    def _handleMissedSchedules(self, previous_minute, now):
+        tasks = cfg.get_value('scheduled_tasks', []) or []
+        due = []
+        for task in tasks:
+            if not task.get('enabled', True) or task_trigger_mode(task) != 'time':
+                continue
+            slot = missed_schedule_slot(task, previous_minute, now)
+            last_triggered = self._last_triggered_ts.get(task.get('id')) if task.get('id') else None
+            if slot is None or (last_triggered is not None and last_triggered >= slot):
+                continue
+            due.append((slot, task))
+            _schedule_event(self, f"定时任务延误：{task.get('name', '未命名')}，计划时间 {QDateTime.fromSecsSinceEpoch(slot).toString('yyyy-MM-dd HH:mm')}")
+        if not due:
+            return
+        if not cfg.get_value('macos_schedule_catch_up', False):
+            _schedule_event(self, "已按设置跳过延误任务；应用关闭或 Mac 睡眠时不会执行任务。")
+            return
+        slot, task = max(due, key=lambda item: item[0])
+        if len(due) > 1:
+            _schedule_event(self, "存在多个延误任务，本次只补跑最近的一项。")
+        pending = getattr(self, '_pending_missed_schedule', None)
+        if not pending or slot > pending['slot']:
+            self._pending_missed_schedule = {'slot': slot, 'task': deepcopy(task)}
+        if self._isScheduleCatchUpBusy():
+            _schedule_event(self, "已有任务在运行，最近的延误任务将在空闲后补跑。")
+            return
+        self._runPendingMissedSchedule()
+
+    def _isScheduleCatchUpBusy(self):
+        active = getattr(self, '_hasActiveStartedProcess', lambda: False)()
+        return (active or self.isTaskRunning() or
+                self._pause_state in (STATE_PAUSING, STATE_PAUSED))
+
+    def _runPendingMissedSchedule(self):
+        pending = getattr(self, '_pending_missed_schedule', None)
+        if not pending or self._isScheduleCatchUpBusy():
+            return
+        self._pending_missed_schedule = None
+        if not cfg.get_value('macos_schedule_catch_up', False):
+            _schedule_event(self, "补跑已关闭，已取消等待中的延误任务。")
+            return
+        tasks = cfg.get_value('scheduled_tasks', []) or []
+        # Do not run a task that was deleted, disabled, or edited while waiting.
+        task = next((item for item in tasks if item == pending['task'] and
+                     item.get('enabled', True) and task_trigger_mode(item) == 'time'), None)
+        if task is None:
+            _schedule_event(self, "等待补跑的任务已删除、停用或修改，不再执行。")
+            return
+        task_id, slot = task.get('id'), pending['slot']
+        if task_id and self._last_triggered_ts.get(task_id, 0) >= slot:
+            return
+        if task_id:
+            self._last_triggered_ts[task_id] = slot
+        _schedule_event(self, f"正在补跑延误任务：{task.get('name', '未命名')}")
+        if not self.runScheduledTask(task, tasks=tasks, manual=False):
+            _schedule_event(self, "延误任务未能启动，请查看日志并手动重试。")
+
     def _checkScheduledTime(self, now=None):
         """检查是否到达任意已启用的定时任务时间并触发对应任务"""
         # 任务暂停期间不触发定时任务，避免打断暂停或为启动新任务而强制停止当前任务
         if self._pause_state in (STATE_PAUSING, STATE_PAUSED):
+            if sys.platform == 'darwin':
+                if now is None:
+                    now = QDateTime.currentDateTime()
+                tasks = cfg.get_value('scheduled_tasks', []) or []
+                for task in tasks:
+                    if not task.get('enabled', True) or task_trigger_mode(task) != 'time':
+                        continue
+                    slot = scheduled_task_slot(task, now)
+                    task_id = task.get('id')
+                    if slot is None or (task_id and self._last_triggered_ts.get(task_id, 0) >= slot):
+                        continue
+                    pending = getattr(self, '_pending_missed_schedule', None)
+                    if cfg.get_value('macos_schedule_catch_up', False):
+                        if not pending or slot > pending['slot']:
+                            self._pending_missed_schedule = {'slot': slot, 'task': deepcopy(task)}
+                            _schedule_event(self, f"任务暂停期间到达计划时间，空闲后补跑：{task.get('name', '未命名')}")
+                    else:
+                        if task_id:
+                            self._last_triggered_ts[task_id] = slot
+                        _schedule_event(self, f"任务暂停期间到达计划时间，按设置跳过：{task.get('name', '未命名')}")
             self._updateScheduleStatusLabel()
             return
         tasks = cfg.get_value('scheduled_tasks', []) or []
@@ -1103,9 +1267,9 @@ class LogInterface(ScrollArea):
             self.appendLog(f"\n========== 定时任务触发 ({task.get('name', '未命名')} @ {time_str}) ==========\n")
 
             conflict_mode = cfg.get_value('scheduled_on_conflict', 'skip') or 'skip'
-            if self.isTaskRunning():
+            if self.isTaskRunning() or (sys.platform == 'darwin' and self._hasActiveStartedProcess()):
                 if conflict_mode == 'skip':
-                    self.appendLog("已有任务在运行，按配置跳过计划任务: {}".format(task.get('name')) + "\n")
+                    _schedule_event(self, "已有任务在运行，按配置跳过计划任务: {}".format(task.get('name')))
                     continue
                 if conflict_mode == 'stop':
                     self.appendLog("已有任务在运行，按配置停止当前任务并在其结束后启动: {}".format(task.get('name')) + "\n")
@@ -1122,10 +1286,11 @@ class LogInterface(ScrollArea):
                         self.appendLog(f"停止当前任务失败: {error}\n")
                     return
             try:
-                self.runScheduledTask(task, tasks=tasks, manual=False)
+                if not self.runScheduledTask(task, tasks=tasks, manual=False):
+                    _schedule_event(self, f"计划任务未能启动：{task.get('name', '未命名')}")
                 return
             except Exception as error:
-                self.appendLog(f"启动任务失败: {error}\n")
+                _schedule_event(self, f"启动任务失败: {error}")
 
     def _clearTaskTimeout(self):
         timer = getattr(self, '_timeout_timer', None)
@@ -1190,6 +1355,24 @@ class LogInterface(ScrollArea):
         self._stopped_abnormally = False
         self._user_initiated_stop = False
         self._suppress_process_error = False
+
+        # A browser opened by the GUI has its own WebDriver. Release that
+        # control channel before a cloud task connects to the same profile.
+        if sys.platform == 'darwin' and cfg.cloud_game_enable:
+            if isinstance(command_or_task, dict):
+                program = str(command_or_task.get('program', '')).strip().lower()
+                argument = str(command_or_task.get('args', '')).strip()
+                cloud_task = program == 'workflow' or (program == 'self' and argument in PAUSABLE_TASKS)
+            else:
+                cloud_task = str(command_or_task).strip() in PAUSABLE_TASKS
+            if cloud_task:
+                controller = get_game_controller()
+                if getattr(controller, 'driver', None):
+                    if not controller._detach_existing_driver():
+                        self.appendLog("无法释放首页的浏览器控制连接，任务未启动。\n")
+                        return
+                    self._gui_browser_handed_off = True
+                    self.appendLog("已将云游戏浏览器交给任务进程。\n")
 
         # 如果传入的是任务字典，则作为外部/自定义任务处理
         if isinstance(command_or_task, dict):
@@ -1329,7 +1512,8 @@ class LogInterface(ScrollArea):
         self._external_task_user_initiated_stop = False
         self.current_task = None
         self._hideLogOverlay()
-        self._updateFinishedStatus(effective_exit_code)
+        self.last_task_user_stopped = bool(user_stopped)
+        self._updateFinishedStatus(effective_exit_code, user_stopped=user_stopped)
         self.taskFinished.emit(effective_exit_code)
 
     def _startTask(self, task, timeout=0):
@@ -1386,7 +1570,12 @@ class LogInterface(ScrollArea):
         self.process.setProcessEnvironment(env)
 
         # 构建命令
-        if getattr(sys, 'frozen', False):
+        if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
+            executable_path = sys.executable
+            self.process.setWorkingDirectory(sys._MEIPASS)
+            arguments = ['--task-worker', command]
+            self.appendLog(f"启动任务: {command}\n")
+        elif getattr(sys, 'frozen', False):
             executable_path = os.path.abspath("./March7th Assistant.exe")
             if not os.path.exists(executable_path):
                 self.appendLog("错误: 未找到可执行文件 March7th Assistant.exe" + "\n")
@@ -1498,6 +1687,9 @@ class LogInterface(ScrollArea):
                     capture_output=True,
                     creationflags=sp.CREATE_NO_WINDOW
                 )
+            elif sys.platform == 'darwin':
+                from utils.process_tree import terminate_tree
+                terminate_tree(pid)
             else:
                 # macOS / Linux: 递归获取并终止子进程，避免使用进程组以免误杀 GUI
                 import subprocess as sp
@@ -1611,6 +1803,8 @@ class LogInterface(ScrollArea):
         if step_path not in (None, ''):
             command.extend(['--workflow-step-path', str(step_path)])
         if getattr(sys, 'frozen', False):
+            if sys.platform == 'darwin':
+                return sys.executable, shlex.join(['--task-worker', *command])
             program = os.path.abspath('./March7th Assistant.exe')
             return program, shlex.join(command)
         program = sys.executable
@@ -1641,6 +1835,8 @@ class LogInterface(ScrollArea):
 
     def _pauseControlPath(self):
         """暂停指令文件路径（CLI 通过环境变量 MARCH7TH_CONTROL_FILE 读取同一路径）。"""
+        if sys.platform == 'darwin':
+            return os.path.join(data_dir(), 'temp', 'pause.json')
         return os.path.abspath(os.path.join('temp', 'pause.json'))
 
     def _injectPauseControlEnv(self, env):
@@ -1981,6 +2177,14 @@ class LogInterface(ScrollArea):
             if process is not self.process or getattr(process, '_task_finalized', False):
                 return
             process._task_finalized = True
+        if sys.platform == 'darwin' and getattr(self, '_gui_browser_handed_off', False):
+            self._gui_browser_handed_off = False
+            try:
+                # If the worker failed to start or was killed, it may not have
+                # cleaned the GUI-owned browser after the handoff.
+                get_game_controller().close_all_m7a_browser()
+            except Exception as exc:
+                self.appendLog(f"清理任务浏览器失败：{type(exc).__name__}\n")
         # 终止并清理任何和当前任务绑定的超时定时器
         self._clearTaskTimeout()
         # 复位暂停状态并清理控制文件
@@ -1993,8 +2197,13 @@ class LogInterface(ScrollArea):
             self._user_initiated_stop = False
         except Exception:
             user_stop = False
+        if sys.platform == 'darwin' and user_stop and exit_code == 0:
+            exit_code = 1
         if exit_status == QProcess.NormalExit and exit_code == 0:
-            self.appendLog(f"任务完成，退出码: {exit_code}\n")
+            if sys.platform == 'darwin':
+                self.appendLog("任务进程已结束；请查看各步骤日志确认结果。\n")
+            else:
+                self.appendLog(f"任务完成，退出码: {exit_code}\n")
         else:
             if user_stop:
                 # 用户主动停止统一展示为“任务已停止”，不视为异常
@@ -2048,7 +2257,8 @@ class LogInterface(ScrollArea):
             except Exception:
                 pass
 
-        self._updateFinishedStatus(exit_code)
+        self.last_task_user_stopped = user_stop
+        self._updateFinishedStatus(exit_code, user_stopped=user_stop)
         self._hideLogOverlay()
         self.taskFinished.emit(exit_code)
 
@@ -2256,6 +2466,9 @@ class LogInterface(ScrollArea):
 
     def _perform_post_action(self, action: str) -> None:
         """执行任务完成后的系统操作：Shutdown, Sleep, Hibernate, Restart, Logoff, TurnOffDisplay"""
+        if sys.platform == 'darwin':
+            self.logMessage.emit(f"完成后操作 {self._post_action_label(action)} 当前不支持 macOS，已跳过\n")
+            return
         try:
             act = str(action)
             label = self._post_action_label(act)
@@ -2294,7 +2507,7 @@ class LogInterface(ScrollArea):
             except Exception:
                 pass
 
-    def _updateFinishedStatus(self, exit_code):
+    def _updateFinishedStatus(self, exit_code, user_stopped=False):
         """更新完成状态
 
         如果存在等待的完成后操作（_pending_post_action_timer），保持停止按钮可用以便用户取消；否则禁用。
@@ -2319,10 +2532,13 @@ class LogInterface(ScrollArea):
             pass
 
         if exit_code == 0:
-            self.statusLabel.setText(tr('任务完成'))
+            self.statusLabel.setText('任务进程已结束，请查看日志' if sys.platform == 'darwin' else tr('任务完成'))
             # self.statusLabel.setStyleSheet("color: green;")
         else:
-            self.statusLabel.setText(tr('任务已停止'))
+            if sys.platform == 'darwin' and not user_stopped:
+                self.statusLabel.setText(tr('任务失败，请查看日志'))
+            else:
+                self.statusLabel.setText(tr('任务已停止'))
             # self.statusLabel.setStyleSheet("color: orange;")
 
     def isTaskRunning(self):

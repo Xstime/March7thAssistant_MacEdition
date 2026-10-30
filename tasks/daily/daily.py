@@ -2,6 +2,7 @@ from module.logger import log
 from module.config import cfg
 from module.screen import screen
 from utils.date import Date
+from utils.task_progress import set_phase
 from tasks.daily.photo import Photo
 from tasks.weekly.currency_wars import CurrencyWars
 from tasks.weekly.divergent_universe import DivergentUniverse
@@ -20,6 +21,17 @@ from tasks.daily.redemption import Redemption
 from tasks.daily.ember_exchange import EmberExchange
 from utils.color import red, green, yellow
 import datetime
+import sys
+
+
+def _run_platform_task(name, action):
+    if sys.platform == "darwin":
+        from utils.macos_capabilities import unsupported_reason
+        reason = unsupported_reason(name)
+        if reason:
+            log.warning(f"跳过任务：{reason}")
+            return None
+    return action()
 
 
 class Daily:
@@ -45,6 +57,7 @@ class Daily:
         else:
             log.info("每日实训未开启")
 
+        set_phase("running", "检查活动")
         activity.start()
 
         if cfg.power_enable:
@@ -54,7 +67,9 @@ class Daily:
                     # 注意，这里并没有解决每天开始时间。也就是4点开始。按照真实时间进行执行
                     isoweekday = datetime.date.today().isoweekday()
                     if isoweekday >= cfg.echo_of_war_start_day_of_week:
-                        Echoofwar.start()
+                        set_phase("running", "历战余响")
+                        if Echoofwar.start() is False and sys.platform == "darwin":
+                            raise RuntimeError("历战余响未完成，请检查日志")
                     else:
                         log.info(f"历战余响设置周{cfg.echo_of_war_start_day_of_week}后开始执行，当前为周{isoweekday}, 跳过执行")
                 else:
@@ -62,13 +77,18 @@ class Daily:
             else:
                 log.info("历战余响未开启")
 
-            Power.run(skip_weekly_cleanup=True)
+            set_phase("running", "清体力")
+            result = Power.run(skip_weekly_cleanup=True)
+            if sys.platform == "darwin" and result is False:
+                raise RuntimeError("清体力未完成，请检查副本配置和日志")
         else:
             log.info("清体力未开启，跳过历战余响和清体力")
 
         if cfg.daily_enable:
             if ignore_refresh or Date.is_next_x_am(cfg.last_run_timestamp, cfg.refresh_hour):
-                Daily.run()
+                set_phase("running", "每日实训")
+                if Daily.run() is False and sys.platform == "darwin":
+                    raise RuntimeError("每日实训未达成目标，请检查日志")
             else:
                 log.info("每日实训尚未刷新")
         else:
@@ -77,7 +97,8 @@ class Daily:
     @staticmethod
     def routine():
         Daily.prepare_daily(ignore_refresh=True)
-        reward.start()
+        set_phase("running", "领取奖励")
+        return reward.start()
 
     @staticmethod
     def _run_scheduled_divergent_universe(divergent: DivergentUniverse):
@@ -102,6 +123,8 @@ class Daily:
         for _ in range(remaining_runs):
             if not divergent.start():
                 log.warning(f"差分宇宙本轮未完成，不计入固定次数，下次将从 {cycle_label} {completed_count}/{target_count} 继续")
+                if sys.platform == "darwin":
+                    raise RuntimeError("差分宇宙固定次数任务未完成")
                 return
 
             completed_count = DivergentUniverse.get_recorded_run_count(cycle)
@@ -123,14 +146,17 @@ class Daily:
             else:
                 log.info("自塑尘脂自动合成未开启")
 
+            set_phase("running", "余烬兑换")
             EmberExchange.start()
 
         if cfg.currencywars_enable:
             if Date.is_next_mon_x_am(cfg.currencywars_timestamp, cfg.refresh_hour):
+                set_phase("running", "货币战争")
                 war = CurrencyWars()
                 screen.change_to("currency_wars_homepage")
                 if not war.check_currency_wars_score():
-                    war.start()
+                    if war.start() is False and sys.platform == "darwin":
+                        raise RuntimeError("货币战争未完成，请检查日志")
             else:
                 log.info("「货币战争」积分奖励尚未刷新")
         else:
@@ -139,16 +165,20 @@ class Daily:
         divergent = DivergentUniverse()
         if cfg.weekly_divergent_enable:
             if Date.is_next_mon_x_am(cfg.weekly_divergent_timestamp, cfg.refresh_hour):
+                set_phase("running", "差分宇宙")
                 screen.change_to("divergent_main")
                 for _ in range(3):
                     if not divergent.check_divergent_universe_score():
-                        divergent.start()
+                        if divergent.start() is False and sys.platform == "darwin":
+                            raise RuntimeError("差分宇宙未完成，请检查日志")
                         if not Date.is_next_mon_x_am(cfg.weekly_divergent_timestamp, cfg.refresh_hour):
                             break
                     else:
                         break
                 else:
                     log.warning("尝试运行了多轮差分宇宙，但积分奖励仍未完成，可能遇到未知问题，请检查日志")
+                    if sys.platform == "darwin":
+                        raise RuntimeError("差分宇宙积分奖励未完成，请检查日志")
             else:
                 log.info("「差分宇宙」积分奖励尚未刷新")
         else:
@@ -156,7 +186,7 @@ class Daily:
 
         if cfg.fight_enable:
             if Date.is_next_x_am(cfg.fight_timestamp, cfg.refresh_hour):
-                Fight.start()
+                _run_platform_task("fight", Fight.start)
             else:
                 log.info("锄大地尚未刷新")
         else:
@@ -166,9 +196,10 @@ class Daily:
             if Date.is_next_mon_x_am(cfg.universe_timestamp, cfg.refresh_hour):
                 if cfg.universe_enable:
                     if cfg.universe_category == "divergent":
+                        set_phase("running", "差分宇宙")
                         Daily._run_scheduled_divergent_universe(divergent)
                     else:
-                        Universe.start()
+                        _run_platform_task("universe", Universe.start)
                 else:
                     log.info("模拟宇宙/差分宇宙未开启")
             else:
@@ -177,9 +208,10 @@ class Daily:
             if Date.is_next_x_am(cfg.universe_timestamp, cfg.refresh_hour):
                 if cfg.universe_enable:
                     if cfg.universe_category == "divergent":
+                        set_phase("running", "差分宇宙")
                         Daily._run_scheduled_divergent_universe(divergent)
                     else:
-                        Universe.start()
+                        _run_platform_task("universe", Universe.start)
                 else:
                     log.info("模拟宇宙/差分宇宙未开启")
             else:
@@ -187,7 +219,9 @@ class Daily:
 
         if Date.is_next_mon_x_am(cfg.forgottenhall_timestamp, cfg.refresh_hour):
             if cfg.forgottenhall_enable:
-                challenge.start("memoryofchaos")
+                set_phase("running", "忘却之庭")
+                if challenge.start("memoryofchaos") is False and sys.platform == "darwin":
+                    raise RuntimeError("忘却之庭未完成，请检查日志")
             else:
                 log.info("忘却之庭未开启")
         else:
@@ -195,7 +229,9 @@ class Daily:
 
         if Date.is_next_mon_x_am(cfg.purefiction_timestamp, cfg.refresh_hour):
             if cfg.purefiction_enable:
-                challenge.start("purefiction")
+                set_phase("running", "虚构叙事")
+                if challenge.start("purefiction") is False and sys.platform == "darwin":
+                    raise RuntimeError("虚构叙事未完成，请检查日志")
             else:
                 log.info("虚构叙事未开启")
         else:
@@ -203,7 +239,9 @@ class Daily:
 
         if Date.is_next_mon_x_am(cfg.apocalyptic_timestamp, cfg.refresh_hour):
             if cfg.apocalyptic_enable:
-                challenge.start("apocalyptic")
+                set_phase("running", "末日幻影")
+                if challenge.start("apocalyptic") is False and sys.platform == "darwin":
+                    raise RuntimeError("末日幻影未完成，请检查日志")
             else:
                 log.info("末日幻影未开启")
         else:
@@ -223,6 +261,8 @@ class Daily:
 
         tasks = Tasks("./assets/config/task_mappings.json")
         tasks.start()
+        if sys.platform == "darwin" and not tasks.daily_tasks and not tasks.activity_full:
+            raise RuntimeError("未识别到每日实训内容或活跃度已满提示，无法确认完成状态")
 
         cfg.set_value("daily_tasks", tasks.daily_tasks)
         log.hr("完成", 2)
@@ -230,6 +270,15 @@ class Daily:
     @staticmethod
     def run():
         log.hr("开始日常任务", 0)
+        def finalize_daily():
+            result = reward.start_specific("quest")
+            if (sys.platform == "darwin" and cfg.reward_enable and cfg.reward_quest_enable
+                    and result is not True):
+                log.warning("每日实训完成状态或奖励未能确认，不记录完成时间")
+                return False
+            cfg.save_timestamp("last_run_timestamp")
+            return True
+
         # 先清空，日常任务还没刷新前，避免残留未完成任务导致异常
         empty_tasks = []
         cfg.set_value("daily_tasks", empty_tasks)
@@ -293,13 +342,14 @@ class Daily:
 
             log.info(f"已完成：{yellow(f'{done_count}/{len(cfg.daily_tasks)}')}")
             log.info(f"当前累计分数：{yellow(f'{current_score}/{TARGET_SCORE}')}")
+            recorded_completion = False
             for task_name, (task_function, score) in task_functions.items():
                 if current_score >= TARGET_SCORE:
                     log.info(f"实训分数已达标")
                     # 确定完成后提前领取奖励
-                    reward.start_specific("quest")
-                    # 记录完成时间
-                    cfg.save_timestamp("last_run_timestamp")
+                    if not finalize_daily():
+                        return False
+                    recorded_completion = True
                     break
                 if task_name in cfg.daily_tasks and cfg.daily_tasks[task_name]:
                     if task_function():
@@ -309,9 +359,15 @@ class Daily:
                         log.info(f"完成任务: {task_name} (+{green(f'{score}')}分)，当前分数: {yellow(f'{current_score}/{TARGET_SCORE}')}")
                     else:
                         log.info(f"任务无法完成: {task_name}")
-            # 清空日常任务，避免由于提前结束，而cfg中残留未完成任务导致出现异常
+            if current_score >= TARGET_SCORE and not recorded_completion:
+                if not finalize_daily():
+                    return False
+            elif current_score < TARGET_SCORE and sys.platform == "darwin":
+                log.warning(f"每日实训未达目标：{current_score}/{TARGET_SCORE}")
+                return False
+            # 仅在确认完成后清空；失败时保留待处理状态。
             cfg.set_value("daily_tasks", empty_tasks)
         else:
-            reward.start_specific("quest")
-            cfg.save_timestamp("last_run_timestamp")
+            if not finalize_daily():
+                return False
         log.hr("完成", 2)
