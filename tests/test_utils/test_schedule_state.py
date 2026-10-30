@@ -22,4 +22,4 @@ def test_schedule_journal_persists_without_multiline_records(monkeypatch, tmp_pa
     schedule_state.record_schedule_event('任务延误\n下一行')
     path = tmp_path / 'scheduler.log'
     assert os.name == 'nt' or path.stat().st_mode & 0o777 == 0o600
-    assert '任务延误 下一行' in path.read_text()
+    assert '任务延误 下一行' in path.read_text(encoding='utf-8')

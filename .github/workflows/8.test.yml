@@ -27,7 +27,7 @@ on:
 jobs:
   test:
     env:
-      QT_QPA_PLATFORM: offscreen
+      QT_QPA_PLATFORM: ${{ matrix.os == 'windows' && 'windows' || 'offscreen' }}
     name: Test (${{ matrix.os }}, ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -72,6 +72,10 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --group dev
+
+      - name: Fetch macOS OCR models
+        if: matrix.os == 'macos'
+        run: uv run python tools/fetch_macos_ocr_models.py
 
       - name: Check translation catalogs
         run: uv run python -m tools.i18n check
