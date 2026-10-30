@@ -11,7 +11,7 @@ def test_progress_is_private_and_scoped_to_current_process(monkeypatch, tmp_path
     task_progress.set_phase('running', '清体力')
     event = task_progress.read_progress(os.getpid(), started)
     assert (event['phase'], event['detail'], event['step'], event['total']) == ('running', '清体力', 2, 3)
-    assert os.stat(task_progress.progress_path(os.getpid())).st_mode & 0o777 == 0o600
+    assert os.name == 'nt' or os.stat(task_progress.progress_path(os.getpid())).st_mode & 0o777 == 0o600
     assert task_progress.read_progress(os.getpid(), time.time() + 2) is None
     task_progress.set_major_step(0, 0)
     task_progress.set_phase('login', '检查登录')

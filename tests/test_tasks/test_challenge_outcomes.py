@@ -101,6 +101,8 @@ def test_challenge_dispatch_returns_failure(monkeypatch):
 ])
 def test_complete_run_propagates_challenge_failure(setting, mode, label, monkeypatch):
     module = import_module('tasks.daily.daily')
+    from types import SimpleNamespace
+    monkeypatch.setattr(module, 'sys', SimpleNamespace(platform='darwin'))
     config = Mock(asset_manager_enable=False, currencywars_enable=False,
                   weekly_divergent_enable=False, fight_enable=False,
                   universe_frequency='disabled', forgottenhall_enable=False,

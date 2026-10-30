@@ -89,7 +89,8 @@ def _parsed_sources():
             tree = ast.parse(source, str(path))
         except (SyntaxError, ValueError):
             continue
-        rel = str(path).replace("\\", "/").split("March7thAssistant/")[-1]
+        from pathlib import Path
+        rel = path.resolve().relative_to(Path(__file__).resolve().parents[2]).as_posix()
         yield rel, tree
 
 

@@ -3,9 +3,6 @@ name: Build & Release App
 # 触发条件：手动触发或标签推送
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*.*.*"
 
 jobs:
   build:

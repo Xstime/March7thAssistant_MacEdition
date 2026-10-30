@@ -37,4 +37,5 @@ def test_open_log_folder_targets_logs_dir(monkeypatch):
     calls = []
     monkeypatch.setattr(desktop, 'open_path', lambda path: calls.append(path))
     desktop.open_log_folder()
-    assert calls == ["./logs"]
+    from utils.runtime_paths import log_dir
+    assert calls == [log_dir()]

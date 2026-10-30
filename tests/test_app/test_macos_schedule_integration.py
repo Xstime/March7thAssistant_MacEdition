@@ -1,9 +1,13 @@
 """Run a real Qt event loop against an isolated persisted scheduler checkpoint."""
 from unittest.mock import Mock
+import sys
+import pytest
 from PySide6.QtCore import QDateTime
 from app.log_interface import LogInterface
 from utils import schedule_state
 from module.config import cfg
+
+pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='macOS scheduler integration')
 
 
 def test_qt_startup_recovers_missed_task_from_checkpoint(qtbot, monkeypatch, tmp_path):

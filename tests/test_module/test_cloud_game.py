@@ -187,7 +187,8 @@ class TestMacOSCloudPrivacy(unittest.TestCase):
                 controller._save_qr_from_src(element, path)
                 with open(path, "rb") as image:
                     self.assertEqual(image.read(), b"local-png")
-                self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+                if os.name != "nt":
+                    self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
                 request.assert_not_called()
                 element.get_attribute.assert_not_called()
 

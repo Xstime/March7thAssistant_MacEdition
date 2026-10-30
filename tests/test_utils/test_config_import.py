@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -26,7 +27,7 @@ def test_import_backs_up_current_config_before_applying(tmp_path):
     count, backup = import_task_settings(str(source), config)
     assert count == 1
     assert Path(backup).read_text(encoding='utf-8') == 'daily_enable: false\n'
-    assert Path(backup).stat().st_mode & 0o077 == 0
+    assert os.name == 'nt' or Path(backup).stat().st_mode & 0o077 == 0
     config.set_values.assert_called_once_with({'daily_enable': True})
 
 

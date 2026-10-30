@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from utils import preview_exchange as preview
@@ -10,7 +11,7 @@ def test_only_requested_frames_are_published_and_cleared(tmp_path, monkeypatch):
     token = preview.publish_requested_frame(b'first', None)
     image = Path(preview.preview_path())
     assert image.read_bytes() == b'first'
-    assert image.stat().st_mode & 0o077 == 0
+    assert os.name == 'nt' or image.stat().st_mode & 0o077 == 0
     assert preview.publish_requested_frame(b'second', token) == token
     assert image.read_bytes() == b'first'
     preview.request_preview()

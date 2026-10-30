@@ -19,7 +19,7 @@ def test_private_events_track_capture_and_recognition_without_text(monkeypatch, 
     assert result['engine'] == 'onnx_cpu'
     assert start <= result['recognized_at'] <= time.time()
     assert set(result) == {'pid', 'time', 'engine', 'recognized_at'}
-    assert os.stat(diag._path(pid, 'ocr')).st_mode & 0o777 == 0o600
+    assert os.name == 'nt' or os.stat(diag._path(pid, 'ocr')).st_mode & 0o777 == 0o600
     assert diag.read_event(pid, 'ocr', time.time() + 10) is None
     diag.record_event('ocr', engine='onnx_cpu', recognized=False)
     assert diag.read_event(pid, 'ocr', start)['recognized_at'] == result['recognized_at']
@@ -39,7 +39,7 @@ def test_resource_samples_are_private_and_bounded(monkeypatch, tmp_path):
     diag.record_sample({'cpu_percent': 4.2, 'memory_bytes': 1024})
     path = tmp_path / 'runtime-diagnostics.jsonl'
     assert json.loads(path.read_text()) == {'cpu_percent': 4.2, 'memory_bytes': 1024}
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert os.name == 'nt' or path.stat().st_mode & 0o777 == 0o600
     path.write_text('x' * (1024 * 1024))
     diag.record_sample({'cpu_percent': 3.0})
     assert (tmp_path / 'runtime-diagnostics.jsonl.1').exists()

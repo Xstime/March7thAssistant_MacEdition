@@ -23,4 +23,4 @@ def test_explicit_data_and_log_overrides_are_independent(monkeypatch, tmp_path):
 def test_private_directory_is_not_world_readable(tmp_path):
     directory = tmp_path / "private"
     runtime_paths.private_dir(str(directory))
-    assert directory.stat().st_mode & 0o077 == 0
+    assert os.name == 'nt' or directory.stat().st_mode & 0o077 == 0

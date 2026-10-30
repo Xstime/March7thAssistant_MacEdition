@@ -1,10 +1,13 @@
 """Verify real config survives abrupt task-process termination."""
 import os
+import pytest
 from pathlib import Path
 import subprocess
 import sys
 
 from ruamel.yaml import YAML
+
+pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='macOS data path checkpoint')
 
 
 def test_confirmed_plan_checkpoint_survives_abrupt_exit(tmp_path):

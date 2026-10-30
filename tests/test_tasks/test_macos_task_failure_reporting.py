@@ -8,7 +8,7 @@ import pytest
 
 
 def load_dispatch():
-    source = (Path(__file__).resolve().parents[2] / 'main.py').read_text()
+    source = (Path(__file__).resolve().parents[2] / 'main.py').read_text(encoding='utf-8')
     node = next(item for item in ast.parse(source).body
                 if isinstance(item, ast.FunctionDef) and item.name == 'run_sub_task')
     module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))

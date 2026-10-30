@@ -2,6 +2,9 @@ from PySide6.QtCore import QDateTime
 from types import SimpleNamespace, MethodType
 from unittest.mock import Mock
 import pytest
+import sys
+
+pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='macOS scheduler integration')
 
 from app.common.schedule import missed_schedule_slot
 
